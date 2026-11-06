@@ -1,0 +1,172 @@
+server:
+  port: 8080
+  # SSE 流式输出必须关闭响应缓冲，否则前端收不到分片
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+
+spring:
+  application:
+    name: gym-app
+
+  # Knife4j 4.5.0 自带的 OpenApiCustomizer 调用了 springdoc 2.2.0 的
+  # SpringDocConfigProperties.getGroupConfigs()（2.8 已移除签名），会在生成
+  # /v3/api-docs 时抛 NoSuchMethodError，导致接口文档为空。
+  # 排除其自动装配即可：doc.html 静态界面仍由 webjars 提供，不影响使用。
+  autoconfigure:
+    exclude:
+      - com.github.xiaoymin.knife4j.spring.configuration.Knife4jAutoConfiguration
+      # RocketMQ 未启动时再临时加上：
+      # - org.apache.rocketmq.spring.autoconfigure.RocketMQAutoConfiguration
+
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/gym?useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_unicode_ci&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
+    username: ${MYSQL_USERNAME:root}
+    # 口令优先走环境变量；默认值仅匹配本仓库 docker-compose 本地演示口令
+    password: ${MYSQL_PASSWORD:123456}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:redis@2026}
+      database: 0
+      timeout: 3s
+
+  elasticsearch:
+    uris: http://127.0.0.1:9200
+
+  servlet:
+    multipart:
+      max-file-size: 20MB
+
+  ai:
+    # 必须显式指定用谁做对话、用谁做向量。
+    # 不指定的话 OpenAI 与 Ollama 两套自动装配的 matchIfMissing 都是 true，
+    # 两个 ChatModel 同时注册，ChatClient.Builder 找不到唯一实现，启动直接失败：
+    #   required a single bean, but 2 were found: ollamaChatModel, openAiChatModel
+    #
+    # 对话走云端 DeepSeek，向量走本地 Ollama bge-m3：
+    # 训练数据是隐私数据，embedding 不能出本机；而对话可以用更强的云端模型。
+    model:
+      chat: ${AI_CHAT_PROVIDER:openai}
+      embedding: ollama
+
+    # DeepSeek 与 Ollama 同为 OpenAI 兼容协议，
+    # 切换只改 base-url + api-key，业务代码零改动
+    openai:
+      base-url: https://api.deepseek.com
+      # 务必用环境变量注入，切勿把真实 key 写进仓库
+      api-key: ${DEEPSEEK_API_KEY:}
+      chat:
+        options:
+          model: deepseek-chat
+          temperature: 0.7
+    ollama:
+      base-url: http://127.0.0.1:11434
+      chat:
+        options:
+          model: qwen2.5:7b
+          temperature: 0.7
+          # 默认为 2048：Prompt 超长会被静默截断，模型看不到尾部内容却不会报错，
+          # 表现为「一本正经地编造数值」。这是本地部署最常见的坑。
+          num-ctx: 8192
+      embedding:
+        options:
+          model: bge-m3
+    vectorstore:
+      # 不用 Spring AI 的 ElasticsearchVectorStore——混合检索（BM25 + kNN + RRF）
+      # 需要自己发两路查询，直接用 ES Java Client 更可控，见 HybridSearchService。
+      elasticsearch:
+        index-name: gym_knowledge
+        # 维度必须与 Embedding 模型严格一致，换模型就必须重建索引
+        dimensions: 1024
+        similarity: cosine
+
+# 自定义 Starter：模型参数集中管理，业务代码不硬编码任何模型名
+#
+# 整个 gym: 只能有一个顶层键。YAML 里重复键是合法语法但 Spring Boot 明确禁用——
+# OriginTrackedYamlLoader 关掉了 allowDuplicateKeys，重复会直接抛 DuplicateKeyException，
+# 而且是启动期抛，日志里看不出是哪两处重名。所有 gym.* 配置必须合并写在这一段。
+gym:
+  ai:
+    # dev = 云端 DeepSeek（快）；local = Ollama（私有化）；demo = 答辩演示走本地
+    provider: dev
+    max-concurrent-task: 8
+    daily-token-limit: 200000
+    # 召回为空时直接拒绝调用模型，避免通用知识冒充领域知识
+    recall-empty-refuse: true
+    recall-top-k: 6
+    # 多 Agent 滑动窗口：用户+助手各算一条，默认保留最近 8 条
+    memory-window: 8
+  auth:
+    # 演示短信：发码与校验都接受 123456，答辩不用接真短信网关
+    demo-sms: true
+    # 防刷：同号 / 同 IP 每天最多发多少条验证码
+    sms-daily-limit: 20
+    sms-ip-daily-limit: 60
+  demo:
+    # 开启后：确保 demo 账号有半年样板历史（幂等，已有样板会跳过）。
+    # 今天真实打卡不会挡住灌数；样板可单独清，曲线/AI 仍会计入。
+    enabled: true
+    # 强制重新生成：先清空样板再灌（不动今日真实打卡）
+    force: false
+    # 锁死演示剧本：demo 账号不能用正式组改写卧推/肩推（热身仍可）
+    story-lock: true
+  executor:
+    # 并发度必须显式限制：本地 7b 模型 CPU 推理时，同时跑 4 个任务
+    # 会让每个都慢 4 倍并互相抢内存。宁可排队，不可压垮。
+    core-size: 2
+    max-size: 4
+    queue-capacity: 32
+    # 模型偶发抖动重试能救，真错误重试无益，2 次是经验值
+    max-retry: 2
+    retry-backoff-ms: 1000
+    # 单次执行硬超时，防止模型卡死永久占住 worker
+    task-timeout-minutes: 5
+  jwt:
+    # HS256 要求密钥至少 32 字节，短了 jjwt 会在启动时抛 WeakKeyException。
+    # 生产环境务必用环境变量注入；下方仅本地开发默认值。
+    secret: ${JWT_SECRET:gym-dev-secret-key-override-in-production-0123456789abcdef}
+    # 练铁人一场训练 1～2 小时，再加 AI 问几轮；2 小时太容易组间被踢回登录
+    access-expire-seconds: 86400
+    refresh-expire-seconds: 604800
+  mq:
+    # rocketmq=异步消课（需 Docker 里 namesrv+broker 都 Up）；本机没 MQ 时设 GYM_MQ_COURSE_CONSUME_MODE=sync
+    course-consume-mode: ${GYM_MQ_COURSE_CONSUME_MODE:rocketmq}
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+  global-config:
+    db-config:
+      id-type: ASSIGN_ID
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+rocketmq:
+  name-server: 127.0.0.1:9876
+  producer:
+    group: gym-producer-group
+    # 发送超时必须显式设置，默认 3s 在模型推理较慢时会误判为失败
+    send-message-timeout: 10000
+  # 消费者：CourseConsumeConsumer；Topic = gym-consume
+
+knife4j:
+  enable: true
+  openapi:
+    title: 智慧健身管理系统接口文档
+    description: 训练日志驱动的智能体服务
+    version: 1.0.0
+
+logging:
+  level:
+    com.gym: debug
+    org.springframework.ai: info

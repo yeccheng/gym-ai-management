@@ -1,0 +1,140 @@
+name: gym
+
+services:
+  mysql:
+    image: mysql:8.4.3
+    container_name: gym-mysql
+    restart: unless-stopped
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: "123456"
+      MYSQL_DATABASE: gym
+      TZ: Asia/Shanghai
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_0900_ai_ci
+      --default-time-zone=+08:00
+      --max_connections=300
+      --innodb_buffer_pool_size=512M
+    volumes:
+      - mysql-data:/var/lib/mysql
+    mem_limit: 900m
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p123456"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7.4
+    container_name: gym-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --requirepass redis@2026
+      --appendonly yes
+      --maxmemory 200mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    mem_limit: 320m
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    container_name: gym-es
+    restart: unless-stopped
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.ml.enabled=false
+      - xpack.monitoring.collection.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+      # IK ??????? analysis-ik 8.13.4??????????
+      # docker exec gym-es bin/elasticsearch-plugin install -b \
+      #   https://release.infinilabs.com/analysis-ik/stable/elasticsearch-analysis-ik-8.13.4.zip
+      # docker restart gym-es
+    mem_limit: 1g
+
+  rocketmq-namesrv:
+    image: apache/rocketmq:5.3.1
+    container_name: gym-rmq-namesrv
+    restart: unless-stopped
+    ports:
+      - "9876:9876"
+    command: sh mqnamesrv
+    environment:
+      JAVA_OPT_EXT: "-Xms256m -Xmx256m -Xmn128m"
+    mem_limit: 512m
+
+  rocketmq-broker:
+    image: apache/rocketmq:5.3.1
+    container_name: gym-rmq-broker
+    restart: unless-stopped
+    # ???????? root?? root ????? store ????? Exit 255
+    user: root
+    ports:
+      - "10911:10911"
+      - "10909:10909"
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /home/rocketmq/store /home/rocketmq/logs
+        chmod -R 777 /home/rocketmq/store /home/rocketmq/logs
+        exec sh mqbroker -n rocketmq-namesrv:9876 -c /home/rocketmq/broker.conf
+    environment:
+      NAMESRV_ADDR: rocketmq-namesrv:9876
+      # ?????? Windows Docker ???
+      JAVA_OPT_EXT: "-Xms256m -Xmx256m -Xmn128m"
+    depends_on:
+      - rocketmq-namesrv
+    volumes:
+      - rmq-broker-data:/home/rocketmq/store
+      - ./docker/rocketmq/broker.conf:/home/rocketmq/broker.conf:ro
+    mem_limit: 768m
+
+  rocketmq-dashboard:
+    image: apacherocketmq/rocketmq-dashboard:1.0.0
+    container_name: gym-rmq-dashboard
+    restart: unless-stopped
+    ports:
+      - "18080:8080"
+    environment:
+      JAVA_OPTS: "-Drocketmq.namesrv.addr=rocketmq-namesrv:9876"
+    depends_on:
+      - rocketmq-namesrv
+    mem_limit: 512m
+
+  # ????? DeepSeek ????????????? Ollama
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: gym-ollama
+  #   restart: unless-stopped
+  #   ports:
+  #     - "11434:11434"
+  #   environment:
+  #     OLLAMA_NUM_PARALLEL: "4"
+  #     OLLAMA_KEEP_ALIVE: "-1"
+  #     OLLAMA_CONTEXT_LENGTH: "8192"
+  #     OLLAMA_MAX_LOADED_MODELS: "2"
+  #   volumes:
+  #     - ollama-data:/root/.ollama
+  #   mem_limit: 6g
+
+volumes:
+  mysql-data:
+  redis-data:
+  es-data:
+  rmq-broker-data:
+  # ollama-data:

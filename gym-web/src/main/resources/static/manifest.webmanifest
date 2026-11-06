@@ -1,0 +1,24 @@
+{
+  "name": "Iron Log · 智慧健身",
+  "short_name": "Iron Log",
+  "description": "记铁 · 算数 · 懂你数据的 AI 教练",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0c0e12",
+  "theme_color": "#0c0e12",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "vendor/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "vendor/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

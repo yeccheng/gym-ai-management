@@ -1,0 +1,1542 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#060708">
+    <title>智慧健身 · Iron Log</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230c0e12'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-size='14' font-family='Arial' font-weight='700' fill='%237cf5c8'%3EIL%3C/text%3E%3C/svg%3E">
+    <link rel="stylesheet" href="vendor/app.css?v=20261105-base">
+    <link rel="stylesheet" href="vendor/ui-pro.css?v=20261105-volt">
+    <link rel="manifest" href="manifest.webmanifest">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Iron Log">
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+</head>
+<body>
+<!-- 已登录：根本不画启动屏，组间休息别盯 logo -->
+<div id="boot-splash">
+    <div>
+        <div class="boot-mark">IRON <span>LOG</span></div>
+        <div class="boot-sub">智慧健身</div>
+    </div>
+</div>
+<script>
+(function () {
+    var s = document.getElementById('boot-splash');
+    if (!s) return;
+    try {
+        if (localStorage.getItem('gym_token')) {
+            s.remove();
+            return;
+        }
+    } catch (e) {}
+    requestAnimationFrame(function () { s.classList.add('hide'); });
+})();
+</script>
+
+<div id="app">
+    <div class="toast-wrap" aria-live="polite" aria-relevant="additions">
+        <div v-for="t in toasts" :key="t.id" class="toast" :class="t.type" role="status">{{ t.msg }}</div>
+    </div>
+
+    <!-- 登录过期：横幅 + 保留当前页，别整页踢回登录把对话冲掉 -->
+    <div v-if="loggedIn && authExpired" class="auth-expired-banner" role="alert">
+        <span>登录已过期，训练页和对话还留着——重新登录后继续</span>
+        <button type="button" @click="confirmRelogin">重新登录</button>
+    </div>
+
+    <!-- 组间休息钟：记组成功后倒计时 -->
+    <div v-if="loggedIn && rest.active" class="rest-timer-bar" role="timer" :aria-label="rest.label">
+        <div class="rest-timer-main">
+            <span class="rest-timer-label">{{ rest.label }}</span>
+            <span class="rest-timer-clock">{{ formatRest(rest.leftSec) }}</span>
+        </div>
+        <div class="rest-timer-actions">
+            <button type="button" class="ghost" @click="bumpRest(-15)">−15s</button>
+            <button type="button" class="ghost" @click="bumpRest(15)">+15s</button>
+            <button type="button" @click="stopRestTimer">跳过</button>
+        </div>
+        <div class="rest-timer-track"><div class="rest-timer-fill" :style="{width: Math.max(0, rest.leftSec/rest.totalSec*100)+'%'}"></div></div>
+    </div>
+
+    <!-- ========== 登录 / 注册 / 找回密码 ========== -->
+    <section v-if="!loggedIn" class="login-page" :aria-label="authPageTitle">
+        <div class="login-stage">
+            <div class="login-hero">
+                <p class="login-eyebrow">智慧健身管理系统</p>
+                <h1 class="h1">IRON<br><span>LOG</span></h1>
+                <p class="login-tagline">记每一组重量 · 问 AI 教练 · 用真实曲线打破平台期</p>
+                <div class="login-stats" aria-hidden="true">
+                    <div class="login-stat"><b>AI</b><span>多智能体</span></div>
+                    <div class="login-stat"><b>SET</b><span>组组可追</span></div>
+                    <div class="login-stat"><b>1RM</b><span>趋势可视</span></div>
+                </div>
+            </div>
+        <div class="login-card">
+            <div class="login-brand">
+                <div class="logo" aria-hidden="true">
+                    <svg class="icon icon-lg" viewBox="0 0 24 24" stroke-width="2.2" stroke-linecap="round">
+                        <path d="M6.5 8.5v7M17.5 8.5v7M4 10.5v3M20 10.5v3M6.5 12h11"/>
+                    </svg>
+                </div>
+                <h1 class="h1">Iron Log</h1>
+                <p class="login-slogan caption">记每一组 · 问 AI 教练 · 看真实曲线</p>
+            </div>
+            <div class="auth-tabs" role="tablist" v-if="authMode!=='reset'">
+                <button type="button" role="tab" :class="{on: authMode==='login'}"
+                        :aria-selected="authMode==='login'" @click="switchAuthMode('login')">登录</button>
+                <button type="button" role="tab" :class="{on: authMode==='register'}"
+                        :aria-selected="authMode==='register'" @click="switchAuthMode('register')">注册</button>
+            </div>
+            <div class="auth-tabs me-subtabs scroll-x mb-2" role="tablist" v-if="authMode==='login'">
+                <button type="button" class="tab" :class="{on: loginWay==='password'}" @click="loginWay='password'">密码登录</button>
+                <button type="button" class="tab" :class="{on: loginWay==='sms'}" @click="loginWay='sms'">验证码登录</button>
+            </div>
+            <form class="login-form" autocomplete="off" @submit.prevent="submitAuth">
+                <input type="text" class="login-honeypot" tabindex="-1" aria-hidden="true" autocomplete="username">
+                <input type="password" class="login-honeypot" tabindex="-1" aria-hidden="true" autocomplete="current-password">
+
+                <template v-if="authMode==='reset'">
+                    <p class="caption mb-2">手机号 + 验证码设新密码，成功后直接进入。</p>
+                    <label>手机号</label>
+                    <input :key="'rp-'+authFormKey" v-model="loginForm.phone" type="text" inputmode="numeric"
+                           placeholder="11 位手机号" maxlength="11" name="iron-phone-reset"
+                           autocomplete="off" autocapitalize="off" spellcheck="false"
+                           data-lpignore="true" data-1p-ignore="true"
+                           :class="{ 'input-invalid': loginFieldErrors.phone }" @input="loginFieldErrors.phone=''">
+                    <div v-if="loginFieldErrors.phone" class="field-error">{{ loginFieldErrors.phone }}</div>
+                    <label>验证码</label>
+                    <div class="row mb-1">
+                        <input class="flex-1" v-model="loginForm.smsCode" type="text" inputmode="numeric"
+                               placeholder="演示码 123456" maxlength="6"
+                               :class="{ 'input-invalid': loginFieldErrors.smsCode }" @input="loginFieldErrors.smsCode=''">
+                        <button type="button" class="ghost" :disabled="smsCountdown>0 || smsSending" @click="sendSmsCode('reset')">{{ smsBtnText }}</button>
+                    </div>
+                    <div v-if="loginFieldErrors.smsCode" class="field-error">{{ loginFieldErrors.smsCode }}</div>
+                    <label>新密码</label>
+                    <input v-model="loginForm.password" type="password" placeholder="至少 6 位"
+                           :class="{ 'input-invalid': loginFieldErrors.password }" @input="loginFieldErrors.password=''">
+                    <div v-if="loginFieldErrors.password" class="field-error">{{ loginFieldErrors.password }}</div>
+                    <label>确认新密码</label>
+                    <input v-model="loginForm.confirmPassword" type="password" placeholder="再输入一次"
+                           :class="{ 'input-invalid': loginFieldErrors.confirmPassword }" @input="loginFieldErrors.confirmPassword=''">
+                    <div v-if="loginFieldErrors.confirmPassword" class="field-error">{{ loginFieldErrors.confirmPassword }}</div>
+                </template>
+
+                <template v-else-if="authMode==='login' && loginWay==='sms'">
+                    <label>手机号</label>
+                    <input :key="'sp-'+authFormKey" v-model="loginForm.phone" type="text" inputmode="numeric"
+                           placeholder="11 位手机号" maxlength="11" name="iron-phone-login"
+                           autocomplete="off" autocapitalize="off" spellcheck="false"
+                           data-lpignore="true" data-1p-ignore="true"
+                           :class="{ 'input-invalid': loginFieldErrors.phone }" @input="loginFieldErrors.phone=''">
+                    <div v-if="loginFieldErrors.phone" class="field-error">{{ loginFieldErrors.phone }}</div>
+                    <label>验证码</label>
+                    <div class="row mb-1">
+                        <input class="flex-1" v-model="loginForm.smsCode" type="text" inputmode="numeric"
+                               placeholder="演示码 123456" maxlength="6"
+                               :class="{ 'input-invalid': loginFieldErrors.smsCode }" @input="loginFieldErrors.smsCode=''">
+                        <button type="button" class="ghost" :disabled="smsCountdown>0 || smsSending" @click="sendSmsCode('login')">{{ smsBtnText }}</button>
+                    </div>
+                    <div v-if="loginFieldErrors.smsCode" class="field-error">{{ loginFieldErrors.smsCode }}</div>
+                    <p class="caption">演示环境验证码固定 <strong>123456</strong>。</p>
+                </template>
+
+                <template v-else>
+                    <label>{{ authMode==='register' ? '手机号 / 用户名' : '账号' }}</label>
+                    <input :key="'u-'+authFormKey" v-model="loginForm.username" type="text" :name="'u'+authFormKey"
+                           :placeholder="authMode==='register' ? '推荐 11 位手机号' : '手机号或用户名'"
+                           autocomplete="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true"
+                           :class="{ 'input-invalid': loginFieldErrors.username }" @input="onLoginUsernameInput">
+                    <div v-if="loginFieldErrors.username" class="field-error">{{ loginFieldErrors.username }}</div>
+
+                    <template v-if="authMode==='register'">
+                        <label>昵称 <span class="caption">（可选）</span></label>
+                        <input :key="'n-'+authFormKey" v-model="loginForm.realName" type="text" placeholder="例如：铁友"
+                               autocomplete="off" data-lpignore="true"
+                               :class="{ 'input-invalid': loginFieldErrors.realName }" @input="loginFieldErrors.realName=''">
+                        <div v-if="loginFieldErrors.realName" class="field-error">{{ loginFieldErrors.realName }}</div>
+                        <template v-if="isPhoneAccount(loginForm.username)">
+                            <label>短信验证码</label>
+                            <div class="row mb-1">
+                                <input class="flex-1" v-model="loginForm.smsCode" type="text" inputmode="numeric"
+                                       placeholder="演示码 123456" maxlength="6"
+                                       :class="{ 'input-invalid': loginFieldErrors.smsCode }" @input="loginFieldErrors.smsCode=''">
+                                <button type="button" class="ghost" :disabled="smsCountdown>0 || smsSending" @click="sendSmsCode('register')">{{ smsBtnText }}</button>
+                            </div>
+                            <div v-if="loginFieldErrors.smsCode" class="field-error">{{ loginFieldErrors.smsCode }}</div>
+                            <p class="caption mb-1">手机号注册需验证码（演示固定 123456）</p>
+                        </template>
+                    </template>
+
+                    <label>{{ authMode==='register' ? '设置密码' : '密码' }}</label>
+                    <input :key="'p-'+authFormKey" v-model="loginForm.password" type="password" :name="'p'+authFormKey"
+                           :placeholder="authMode==='register' ? '至少 6 位' : '请输入密码'"
+                           autocomplete="new-password" data-lpignore="true" data-1p-ignore="true"
+                           :class="{ 'input-invalid': loginFieldErrors.password }" @input="onLoginPasswordInput">
+                    <div v-if="loginFieldErrors.password" class="field-error">{{ loginFieldErrors.password }}</div>
+
+                    <template v-if="authMode==='register'">
+                        <label>确认密码</label>
+                        <input :key="'c-'+authFormKey" v-model="loginForm.confirmPassword" type="password"
+                               placeholder="再输入一次密码" autocomplete="new-password" data-lpignore="true"
+                               :class="{ 'input-invalid': loginFieldErrors.confirmPassword }" @input="loginFieldErrors.confirmPassword=''">
+                        <div v-if="loginFieldErrors.confirmPassword" class="field-error">{{ loginFieldErrors.confirmPassword }}</div>
+                    </template>
+                </template>
+
+                <button type="submit" class="login-btn" :disabled="loggingIn">{{ authSubmitLabel }}</button>
+                <div v-if="loginError" class="login-err">{{ loginError }}</div>
+                <div v-if="authMode==='login'" class="login-demo-box">
+                    <button type="button" class="ghost login-demo-btn" @click="fillDemoAccount">一键填入体验账号</button>
+                    <p class="login-hint caption">看完整半年故事：demo / demo123 · 场馆后台：admin / admin123</p>
+                </div>
+                <p class="login-switch caption">
+                    <template v-if="authMode==='login'">
+                        <button type="button" class="linkish" @click="switchAuthMode('reset')">忘记密码？</button>
+                        · 还没有账号？<button type="button" class="linkish" @click="switchAuthMode('register')">去注册</button>
+                    </template>
+                    <template v-else-if="authMode==='register'">
+                        已有账号？<button type="button" class="linkish" @click="switchAuthMode('login')">去登录</button>
+                    </template>
+                    <template v-else>
+                        想起密码了？<button type="button" class="linkish" @click="switchAuthMode('login')">返回登录</button>
+                    </template>
+                </p>
+            </form>
+        </div>
+        </div>
+    </section>
+
+    <!-- ========== 主应用 ========== -->
+    <div v-else>
+        <header class="app-top">
+            <div class="app-top-inner">
+                <div class="brand-lockup">
+                    <div class="brand-mark" aria-hidden="true">
+                        <svg class="icon" viewBox="0 0 24 24" stroke-width="2.2" stroke-linecap="round" style="width:18px;height:18px">
+                            <path d="M6.5 8.5v7M17.5 8.5v7M4 10.5v3M20 10.5v3M6.5 12h11"/>
+                        </svg>
+                    </div>
+                    <div class="brand-text">
+                        <div class="brand-name">Iron Log</div>
+                        <div class="brand-hello">{{ memberHello }}</div>
+                    </div>
+                </div>
+                <nav class="top-nav" aria-label="主导航">
+                    <button type="button" class="tab" :class="{active: tab==='train'}" @click="tab='train'">打卡</button>
+                    <button type="button" class="tab" :class="{active: tab==='forum'}" @click="goForum">社区</button>
+                    <button type="button" class="tab" :class="{active: tab==='chat'}" @click="tab='chat'">AI 教练</button>
+                    <button type="button" class="tab" :class="{active: tab==='me'}" @click="goMe">我的</button>
+                    <button type="button" class="tab tab-admin" v-if="isAdmin" :class="{active: tab==='gym'}" @click="goGym">后台</button>
+                </nav>
+                <button type="button" class="ghost btn-xs" @click="logout">退出</button>
+            </div>
+        </header>
+
+        <main class="page">
+            <!-- ===== 训练打卡 ===== -->
+            <section v-show="tab==='train'" class="panel" aria-label="训练打卡">
+                <div class="hero-strip">
+                    <div>
+                        <h2 class="h2 mt-0">今日打卡</h2>
+                        <p class="sub">{{ todayHeroLine }}</p>
+                    </div>
+                    <div class="hero-actions">
+                        <button type="button" class="ghost" @click="tab='chat'">问 AI</button>
+                        <div class="stat-pill">
+                            <b>{{ today.sets.length }}</b>
+                            <span>SETS TODAY</span>
+                        </div>
+                    </div>
+                </div>
+                <div v-if="trainBusy && !exerciseList.length" class="mt-3" aria-hidden="true">
+                    <div class="skeleton-line"></div>
+                    <div class="skeleton-line"></div>
+                </div>
+                <div v-if="injuryWarn" class="warn-banner">{{ injuryWarn }}</div>
+
+                <div class="rest-quick-bar mb-2">
+                    <span class="caption">组间休息</span>
+                    <button type="button" class="ghost btn-xs" @click="startRestTimer(90,'组间休息')">1:30</button>
+                    <button type="button" class="ghost btn-xs" @click="startRestTimer(120,'组间休息')">2:00</button>
+                    <button type="button" class="ghost btn-xs" @click="startRestTimer(180,'组间休息')">3:00</button>
+                    <input type="text" inputmode="numeric" style="width:64px" v-model="restCustomSec" placeholder="秒">
+                    <button type="button" class="ghost btn-xs" @click="startCustomRest">自定义开钟</button>
+                    <label v-if="isAdmin" class="caption" style="margin-left:8px" title="仅管理员：演示故事锁提示">
+                        <input type="checkbox" v-model="demoStoryLock"> 演示硬锁提示
+                    </label>
+                </div>
+
+                <div v-if="lastSession.exercises.length" class="mb-3">
+                    <div class="sect-title mt-0">上次 · {{ lastSession.date }}</div>
+                    <div class="ex-list">
+                        <div class="ex-row" v-for="ex in lastSession.exercises" :key="ex.exerciseId">
+                            <div>
+                                <div class="fw-600">{{ ex.name }}</div>
+                                <div class="meta">上次 {{ ex.lastWeightKg }}kg × {{ ex.lastReps }}</div>
+                            </div>
+                            <button type="button" @click="againSet(ex)">再来一组</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sect-title mt-0" id="exercise-library">动作库</div>
+                <div class="hint mb-1">快捷 · 三大项 / 最近常用</div>
+                <div class="recent-bar">
+                    <button type="button" class="recent-chip" v-for="ex in quickExercises" :key="'q'+ex.id"
+                            @click="pickExercise(ex)">{{ shortExName(ex.name) }}</button>
+                </div>
+                <div class="tag-row">
+                    <button type="button" class="tag" :class="{on: exTag===''}" @click="setExTag('')">全部</button>
+                    <button type="button" class="tag" :class="{on: exTag==='free'}" @click="setExTag('free')">自由重量</button>
+                    <button type="button" class="tag" :class="{on: exTag==='machine'}" @click="setExTag('machine')">固定器械</button>
+                    <button type="button" class="tag" :class="{on: exTag==='dumbbell'}" @click="setExTag('dumbbell')">哑铃</button>
+                    <button type="button" class="tag" :class="{on: exTag==='bodyweight'}" @click="setExTag('bodyweight')">自重</button>
+                </div>
+                <div class="row">
+                    <input type="text" class="flex-1" v-model="exKeyword" placeholder="搜「卧推」——基础动作排前面"
+                           @keyup.enter="loadExercises">
+                    <button type="button" class="ghost" @click="loadExercises">搜索</button>
+                    <button type="button" @click="openCustomExercise">+ 自定义</button>
+                </div>
+                <div v-if="customEx.open" class="custom-ex-card mt-2">
+                    <div class="fw-600 mb-1">库里没有？自己加一个</div>
+                    <p class="caption mb-2">建完立刻能记组；同名已存在会直接复用，不会重复。</p>
+                    <div class="row mb-1">
+                        <input type="text" class="flex-1" v-model="customEx.name"
+                               :placeholder="exKeyword ? ('例如：' + exKeyword) : '动作名，例如：哈克深蹲'">
+                    </div>
+                    <div class="row mb-1">
+                        <select v-model.number="customEx.equipment" style="width:120px">
+                            <option :value="1">杠铃</option>
+                            <option :value="2">哑铃</option>
+                            <option :value="3">固定器械</option>
+                            <option :value="4">自重</option>
+                            <option :value="5">绳索</option>
+                            <option :value="6">壶铃</option>
+                        </select>
+                        <select v-model="customEx.primaryMuscle" style="width:110px">
+                            <option value="胸">胸</option>
+                            <option value="背">背</option>
+                            <option value="肩">肩</option>
+                            <option value="股四头">股四头</option>
+                            <option value="腘绳">腘绳</option>
+                            <option value="臀">臀</option>
+                            <option value="肱二">肱二</option>
+                            <option value="肱三">肱三</option>
+                            <option value="小腿">小腿</option>
+                            <option value="腹">腹</option>
+                            <option value="其他">其他</option>
+                        </select>
+                        <button type="button" @click="saveCustomExercise" :disabled="customExBusy">
+                            {{ customExBusy ? '保存中…' : '保存并选用' }}
+                        </button>
+                        <button type="button" class="ghost" @click="customEx.open=false">取消</button>
+                    </div>
+                </div>
+                <div v-if="exercisesLoading && !exerciseList.length" class="hint mt-3">动作库加载中…</div>
+                <div v-else-if="!trainBusy && !exercisesLoading && !exerciseList.length" class="empty-train mt-3">
+                    <div class="empty-ico">
+                        <svg class="icon icon-xl" viewBox="0 0 24 24" stroke-width="1.8">
+                            <path d="M6.5 8.5v7M17.5 8.5v7M4 10.5v3M20 10.5v3M6.5 12h11"/>
+                        </svg>
+                    </div>
+                    <div class="h2 mb-2" style="font-size:18px">{{ exKeyword ? '没搜到这个动作' : '动作还没出来' }}</div>
+                    <div class="caption">{{ exKeyword ? '可以直接自定义「' + exKeyword + '」并开始记组' : '不用找「全部」，直接点重试' }}</div>
+                    <div class="row mt-2" style="justify-content:center;gap:8px">
+                        <button type="button" v-if="exKeyword" @click="openCustomExercise">自定义「{{ exKeyword }}」</button>
+                        <button type="button" class="ghost" @click="loadExercises">重新加载动作</button>
+                    </div>
+                </div>
+                <div class="ex-list">
+                    <div class="ex-row" v-for="ex in visibleExercises" :key="ex.id">
+                        <div>
+                            <div class="fw-600">{{ ex.name }}</div>
+                            <div class="meta">{{ ex.equipmentLabel }} · {{ ex.primaryMuscle || '—' }}</div>
+                        </div>
+                        <button type="button" @click="pickExercise(ex)">选择</button>
+                    </div>
+                </div>
+                <button type="button" class="ghost mt-2" style="width:100%"
+                        v-if="exerciseList.length > exercisePreviewLimit"
+                        @click="exerciseListExpanded = !exerciseListExpanded">
+                    {{ exerciseListExpanded ? '收起动作库' : ('展开全部 ' + exerciseList.length + ' 个动作') }}
+                </button>
+
+                <button type="button" class="today-fold-btn" @click="todayListOpen = !todayListOpen">
+                    今日已记录（{{ today.sets.length }} 组）{{ todayListOpen ? ' ▾' : ' ▸' }}
+                </button>
+                <div v-show="todayListOpen">
+                    <div v-if="!today.sets.length" class="hint mt-2">今天还没有组记录，选个动作开始吧。</div>
+                    <div v-for="s in today.sets" :key="s.setId" class="set-card" @click="toggleSetDetail(s.setId)">
+                        <div class="set-main">
+                            <span>{{ s.exerciseName }} · {{ s.warmup ? '热身' : '第'+s.setIndex+'组' }}
+                                <span v-if="s.rpe != null" class="caption"> · RPE {{ s.rpe }}</span>
+                            </span>
+                            <span>{{ s.weightKg }}kg × {{ s.reps }}</span>
+                        </div>
+                        <div class="set-detail" v-if="expandedSetId === String(s.setId)">
+                            {{ s.e1rm == null ? '还估不出今天能推多重' : ('大约能推 ' + s.e1rm + ' kg（按这组推算）') }}
+                            <span v-if="s.warmup"> · 热身不计入有效容量</span>
+                            <button type="button" class="ghost btn-xs" @click.stop="deleteTodaySet(s)">删除这组</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sheet-mask" v-if="pad.open" @click="closePad"></div>
+                <div class="sheet" v-if="pad.open" role="dialog" aria-label="记录本组">
+                    <div class="sheet-handle"></div>
+                    <div class="pad">
+                        <div class="pad-title">记一组 · {{ pad.name }}</div>
+                        <button type="button" class="suggest-weight-chip" v-if="pad.suggest && pad.suggest.suggestedWeightKg != null"
+                                @click="applySuggestWeight">
+                            建议 {{ pad.suggest.suggestedWeightKg }}kg · 点一下填入
+                        </button>
+                        <p class="caption suggest-reason" v-if="pad.suggest && pad.suggest.reason">{{ pad.suggest.reason }}</p>
+                        <button type="button" class="last-weight-chip" v-if="pad.lastWeightKg != null" @click="applyLastWeight">
+                            上次重量 {{ pad.lastWeightKg }}kg × {{ pad.lastReps }} · 点一下填入
+                        </button>
+                        <button type="button" class="ghost btn-xs" v-if="pad.suggest && pad.suggest.reason"
+                                @click="askWhySuggest">为什么建议这个？</button>
+                        <div v-if="pad.cue" class="pad-cue">
+                            <button type="button" class="pad-cue-toggle" @click="pad.cueOpen = !pad.cueOpen">
+                                {{ pad.cueOpen ? '▾' : '▸' }} 动作要领
+                            </button>
+                            <div v-show="pad.cueOpen" class="pad-cue-body">
+                                <p v-if="pad.cue.steps"><strong>怎么做</strong> {{ pad.cue.steps }}</p>
+                                <p v-if="pad.cue.commonMistakes"><strong>别犯</strong> {{ pad.cue.commonMistakes }}</p>
+                                <p v-if="pad.cue.breathing"><strong>呼吸</strong> {{ pad.cue.breathing }}</p>
+                                <p v-if="pad.cue.safetyTips"><strong>安全</strong> {{ pad.cue.safetyTips }}</p>
+                            </div>
+                        </div>
+                        <div class="pad-nums">
+                            <div>
+                                <label>重量 kg</label>
+                                <input type="text" inputmode="decimal" v-model="pad.weight" placeholder="例如 82.5"
+                                       :disabled="padSaving" :class="{ 'input-invalid': padFieldErrors.weight }"
+                                       @input="padFieldErrors.weight=''; onPadChange()">
+                                <div v-if="padFieldErrors.weight" class="field-error">{{ padFieldErrors.weight }}</div>
+                            </div>
+                            <div>
+                                <label>次数</label>
+                                <input type="text" inputmode="numeric" v-model="pad.reps" placeholder="例如 5"
+                                       :disabled="padSaving" :class="{ 'input-invalid': padFieldErrors.reps }"
+                                       @input="padFieldErrors.reps=''; onPadChange()">
+                                <div v-if="padFieldErrors.reps" class="field-error">{{ padFieldErrors.reps }}</div>
+                            </div>
+                        </div>
+                        <div class="pad-meta-row">
+                            <button type="button" class="tag" :class="{on: pad.warmup}" @click="toggleWarmup" :disabled="padSaving">
+                                {{ pad.warmup ? '热身组 ✓' : '热身组' }}
+                            </button>
+                            <span class="caption pad-rpe-label">RPE</span>
+                            <button type="button" class="tag rpe-chip" v-for="n in [6,7,8,9,10]" :key="'rpe'+n"
+                                    :class="{on: pad.rpe===n}" @click="setPadRpe(n)" :disabled="padSaving">{{ n }}</button>
+                        </div>
+                        <div class="pad-keys">
+                            <button type="button" @click="bump('weight', -2.5)" :disabled="padSaving">−2.5</button>
+                            <button type="button" @click="bump('weight', 2.5)" :disabled="padSaving">+2.5</button>
+                            <button type="button" @click="bump('reps', 1)" :disabled="padSaving">次数 +1</button>
+                            <button type="button" @click="bump('reps', -1)" :disabled="padSaving">次数 −1</button>
+                            <button type="button" @click="nextSet" :disabled="padSaving">下一组</button>
+                            <button type="button" class="ghost" @click="closePad" :disabled="padSaving">换动作</button>
+                            <button type="button" class="save-main" @click="confirmPad" :disabled="padSaving">
+                                {{ padSaving ? '保存中…' : '保存本组' }}
+                            </button>
+                        </div>
+                        <p class="caption mt-2 mb-0">不会自动保存——调稳重量后再点保存。</p>
+                        <div class="save-hint" :class="{ 'save-ok': pad.hint && pad.hint.indexOf('已保存') === 0 }">{{ pad.hint }}</div>
+                        <div class="rest-quick-row">
+                            <span class="caption">休息钟</span>
+                            <button type="button" class="ghost btn-xs" @click="startRestTimer(90,'组间休息')">1:30</button>
+                            <button type="button" class="ghost btn-xs" @click="startRestTimer(120,'组间休息')">2:00</button>
+                            <button type="button" class="ghost btn-xs" @click="startRestTimer(180,'组间休息')">3:00</button>
+                            <input type="text" inputmode="numeric" style="width:56px" v-model="restCustomSec">
+                            <button type="button" class="ghost btn-xs" @click="startCustomRest">开钟</button>
+                        </div>
+                    </div>
+                </div>
+
+            </section>
+
+            <!-- ===== AI 教练 ===== -->
+            <section v-show="tab==='chat'" class="panel" aria-label="AI 教练">
+                <div class="chat-panel">
+                    <div class="chat-toolbar">
+                        <div>
+                            <h2 class="h2 mt-0" style="margin-bottom:4px">AI Coach</h2>
+                            <span class="hint">教练 · 营养师 · 数据助手 · 记得你的训练上下文</span>
+                        </div>
+                        <button type="button" class="ghost btn-xs" @click="clearChat" :disabled="streaming">清空</button>
+                    </div>
+                    <div class="chat-window" ref="chatWindow">
+                        <div v-if="messages.length===0" class="empty-chat">
+                            <div class="empty-ico">
+                                <svg class="icon icon-xl" viewBox="0 0 24 24" stroke-width="1.8">
+                                    <rect x="5" y="7" width="14" height="10" rx="3"/>
+                                    <circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/>
+                                    <path d="M9 17v2h6v-2"/>
+                                </svg>
+                            </div>
+                            <div class="empty-tip">组间休息？直接点一个问题开聊</div>
+                            <div class="chips">
+                                <button type="button" v-for="q in presets" :key="q" class="chip" @click="askPreset(q)">{{ q }}</button>
+                            </div>
+                        </div>
+                        <div v-for="(m,i) in messages" :key="i" class="msg" :class="m.role">
+                            <div class="msg-col" v-if="m.role==='agent'">
+                                <div v-if="m.agentName" class="hint" style="margin-bottom:4px">本轮：{{ m.agentName }}</div>
+                                <div v-if="m.tools && m.tools.length" class="tool-traces gap-col">
+                                    <div v-for="(t,ti) in m.tools" :key="ti" class="tool-card" :class="t.status">
+                                        <span v-if="t.status==='calling'">正在查询：{{ t.callingLabel }}</span>
+                                        <span v-else>已查询：{{ t.doneLabel }}</span>
+                                    </div>
+                                </div>
+                                <div class="bubble" v-if="m.text" v-html="renderText(m.text)"></div>
+                                <div v-if="m.tools && m.tools.length && m.text && !(streaming && i===messages.length-1)"
+                                     class="evidence-card" @click="toggleEvidence(m)">
+                                    <div>本次回答依据：{{ evidenceSummary(m) }}</div>
+                                    <div v-if="m.evidenceOpen" class="evidence-detail">
+                                        <div v-for="(t,ti) in m.tools" :key="ti">· {{ t.tool }}：{{ t.summary || t.doneLabel || '—' }}</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="bubble" v-else v-html="renderText(m.text)"></div>
+                        </div>
+                        <div v-if="streaming && !hasFirstChunk" class="typing">
+                            AI 教练正在查看你的训练记录<span class="dots"></span>
+                        </div>
+                    </div>
+                    <div class="chat-input-area">
+                        <div class="chips chips-start" v-if="messages.length">
+                            <button type="button" v-for="q in presets" :key="q" class="chip" @click="askPreset(q)">{{ q }}</button>
+                        </div>
+                        <textarea v-model="question" placeholder="例如：卧推涨没涨？下次举多少"
+                                  @keydown="onChatKeydown"></textarea>
+                        <div class="row">
+                            <button class="send-btn" @click="send" :disabled="!canSend">{{ streaming ? '生成中…' : '发送' }}</button>
+                            <button v-if="streaming" class="ghost" @click="stop">停止</button>
+                            <span class="hint">Enter 发送 · Shift+Enter 换行</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ===== 健身社区 ===== -->
+            <section v-show="tab==='forum'" class="panel" aria-label="健身社区">
+                <div class="forum-head">
+                    <div>
+                        <h2 class="h2 mt-0" style="margin-bottom:4px">健身社区</h2>
+                        <span class="hint">发帖 · 评论 · 点赞 · AI 审核 / 摘要 / 教练回帖</span>
+                    </div>
+                    <button type="button" @click="forumView='compose'" v-if="forumView!=='compose'">发帖</button>
+                </div>
+                <div class="me-subtabs scroll-x mb-3" v-if="forumView!=='detail' && forumView!=='compose'">
+                    <button type="button" class="tab" :class="{active: forumView==='list'}" @click="switchForumView('list')">广场</button>
+                    <button type="button" class="tab" :class="{active: forumView==='mine'}" @click="switchForumView('mine')">我发的</button>
+                    <button type="button" class="tab" :class="{active: forumView==='fav'}" @click="switchForumView('fav')">收藏</button>
+                </div>
+
+                <template v-if="forumView==='list' || forumView==='mine' || forumView==='fav'">
+                    <div class="row mb-2" v-if="forumView==='list'" style="gap:8px;flex-wrap:wrap">
+                        <button type="button" class="ghost btn-xs" :class="{on: forumSort==='new'}" @click="forumSort='new'; loadForumList()">最新</button>
+                        <button type="button" class="ghost btn-xs" :class="{on: forumSort==='hot'}" @click="forumSort='hot'; loadForumList()">热门</button>
+                        <select v-model="forumCategory" @change="loadForumList()" style="max-width:120px">
+                            <option :value="0">全部分类</option>
+                            <option :value="1">增肌</option>
+                            <option :value="2">减脂</option>
+                            <option :value="3">饮食</option>
+                            <option :value="4">闲聊</option>
+                            <option :value="5">求助</option>
+                        </select>
+                    </div>
+                    <div v-if="forumBusy" class="hint">加载中…</div>
+                    <div v-else-if="!forumPosts.length" class="empty-table">还没有帖子，来发第一条吧</div>
+                    <div class="forum-list" v-else>
+                        <article class="forum-card" v-for="p in forumPosts" :key="p.id" @click="openForumPost(p.id)">
+                            <div class="forum-card-top">
+                                <span class="badge">{{ forumCatText(p.category) }}</span>
+                                <span class="caption" v-if="p.status===0">待审</span>
+                                <span class="caption" v-else-if="p.status===2">未通过</span>
+                            </div>
+                            <h3 class="forum-title">{{ p.title }}</h3>
+                            <p class="forum-sum" v-if="p.summary">{{ p.summary }}</p>
+                            <p class="forum-sum" v-else>{{ (p.content||'').slice(0,80) }}{{ (p.content||'').length>80?'…':'' }}</p>
+                            <div class="forum-meta">
+                                <span>{{ p.authorName || '用户' }}</span>
+                                <span>阅 {{ p.viewCount||0 }}</span>
+                                <span>赞 {{ p.likeCount||0 }}</span>
+                                <span>评 {{ p.commentCount||0 }}</span>
+                            </div>
+                        </article>
+                    </div>
+                </template>
+
+                <template v-else-if="forumView==='detail' && forumDetail">
+                    <button type="button" class="ghost btn-xs mb-2" @click="backForumList">← 返回</button>
+                    <article class="forum-detail">
+                        <div class="row" style="gap:8px;align-items:center">
+                            <span class="badge">{{ forumCatText(forumDetail.category) }}</span>
+                            <span class="caption">{{ forumDetail.authorName }}</span>
+                        </div>
+                        <h2 class="h2">{{ forumDetail.title }}</h2>
+                        <p class="hint" v-if="forumDetail.summary">AI 摘要：{{ forumDetail.summary }}</p>
+                        <div class="forum-body">{{ forumDetail.content }}</div>
+                        <div class="forum-meta mt-2">
+                            <span>阅 {{ forumDetail.viewCount||0 }}</span>
+                            <button type="button" class="ghost btn-xs" @click.stop="toggleForumLike(1, forumDetail.id)">
+                                {{ forumDetail.liked ? '已赞' : '点赞' }} {{ forumDetail.likeCount||0 }}
+                            </button>
+                            <button type="button" class="ghost btn-xs" @click.stop="toggleForumFav(forumDetail.id)">
+                                {{ forumDetail.favorited ? '已藏' : '收藏' }}
+                            </button>
+                            <button type="button" class="danger btn-xs" v-if="forumDetail.userId===userId"
+                                    @click.stop="deleteForumPost(forumDetail.id)">删除</button>
+                        </div>
+                        <div class="sect-title">评论</div>
+                        <div v-if="!(forumDetail.comments||[]).length" class="caption mb-2">暂无评论</div>
+                        <div class="forum-comments" v-for="c in (forumDetail.comments||[])" :key="c.id">
+                            <div class="forum-cmt" :class="{'is-ai': c.isAi}">
+                                <div class="forum-cmt-hd">
+                                    <strong>{{ c.authorName }}</strong>
+                                    <span class="badge" v-if="c.isAi">AI</span>
+                                    <button type="button" class="ghost btn-xs" @click="toggleForumLike(2, c.id)">赞 {{ c.likeCount||0 }}</button>
+                                    <button type="button" class="ghost btn-xs" @click="forumReplyTo=c.id">回复</button>
+                                </div>
+                                <div>{{ c.content }}</div>
+                                <div class="forum-replies" v-for="r in (c.replies||[])" :key="r.id">
+                                    <div class="forum-cmt nested">
+                                        <div class="forum-cmt-hd"><strong>{{ r.authorName }}</strong></div>
+                                        <div>{{ r.content }}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <textarea v-model="forumCommentText" rows="3"
+                                      :placeholder="forumReplyTo ? ('回复 #'+forumReplyTo+'（楼中楼）') : '写评论…'"></textarea>
+                            <div class="row mt-2">
+                                <button type="button" @click="submitForumComment" :disabled="forumBusy">发表评论</button>
+                                <button type="button" class="ghost" v-if="forumReplyTo" @click="forumReplyTo=null">取消回复</button>
+                            </div>
+                        </div>
+                    </article>
+                </template>
+
+                <template v-else-if="forumView==='compose'">
+                    <button type="button" class="ghost btn-xs mb-2" @click="backForumList">← 返回</button>
+                    <label>标题</label>
+                    <input v-model="forumForm.title" maxlength="120" placeholder="一句话说清主题">
+                    <label>分类</label>
+                    <select v-model="forumForm.category">
+                        <option :value="1">增肌</option>
+                        <option :value="2">减脂</option>
+                        <option :value="3">饮食</option>
+                        <option :value="4">闲聊</option>
+                        <option :value="5">求助（AI 教练会自动回帖）</option>
+                    </select>
+                    <label>正文</label>
+                    <textarea v-model="forumForm.content" rows="8" placeholder="分享训练经验 / 饮食 / 求助…"></textarea>
+                    <p class="caption">发布前会走敏感词 + AI 审核；通过后生成摘要，求助帖由 AI 教练回帖。</p>
+                    <div class="row mt-2">
+                        <button type="button" @click="submitForumPost" :disabled="forumBusy">{{ forumBusy ? '审核中…' : '发布' }}</button>
+                    </div>
+                </template>
+            </section>
+
+            <!-- ===== 我的训练台 ===== -->
+            <section v-show="tab==='me'" class="panel" aria-label="我的训练">
+                <h2 class="h2">我的训练</h2>
+                <p class="hint mt-0 mb-2">看板 · 历史 · 周计划 · 场馆——记铁主路径都在这。</p>
+                <div class="me-subtabs scroll-x mb-3">
+                    <button type="button" class="tab" :class="{active: meSub==='mine'}" @click="switchMeSub('mine')">看板</button>
+                    <button type="button" class="tab" :class="{active: meSub==='history'}" @click="switchMeSub('history')">历史</button>
+                    <button type="button" class="tab" :class="{active: meSub==='plan'}" @click="switchMeSub('plan')">周计划</button>
+                    <button type="button" class="tab" :class="{active: meSub==='venue'}" @click="switchMeSub('venue')">场馆</button>
+                </div>
+
+                <div v-show="meSub==='mine'">
+                    <div class="habit-strip" v-if="habitStats">
+                        <span class="fw-600">🔥 {{ habitStats.streakDays }} 天连续</span>
+                        <span class="caption">本周 {{ habitStats.trainedDaysThisWeek }}/{{ habitStats.weekGoal }} · {{ habitStats.weekCompletePct }}%</span>
+                    </div>
+                    <div class="weekly-review-card">
+                        <div class="sect-title mt-0">本周周报</div>
+                        <p class="caption mb-2">涨了什么 / 卡住什么 / 下周怎么改——一键生成。</p>
+                        <div class="row mb-2">
+                            <button type="button" @click="runWeeklyReview" :disabled="reviewBusy">
+                                {{ reviewBusy ? '生成中…' : (weeklyReviewText ? '再生成一版' : '生成本周周报') }}
+                            </button>
+                            <button type="button" class="ghost" v-if="weeklyReviewText" @click="askAboutReview">问 AI 细化</button>
+                        </div>
+                        <div class="result-box" v-if="weeklyReviewText">{{ weeklyReviewText }}</div>
+                        <div class="hint" v-else-if="reviewBusy">正在查你的数据并写周报…</div>
+                    </div>
+                    <div v-if="visibleReminders.length" class="remind-board mb-3">
+                        <div class="sect-title mt-0">教练提醒</div>
+                        <div v-for="(tip,i) in visibleReminders" :key="'r'+i" class="remind-row">
+                            <span>{{ tip }}</span>
+                            <button type="button" class="linkish" @click="dismissReminder(tip)">知道了</button>
+                        </div>
+                    </div>
+                    <div v-if="intensityHint.deviationCount" class="hint mb-2">
+                        计划偏差：{{ intensityHint.reason }}（强度系数 {{ intensityHint.factor }}）
+                        <button type="button" class="ghost btn-xs" @click="reportDeviation('BAD_FEEL')">记一笔状态差</button>
+                    </div>
+                    <div v-if="today.sets.length" class="me-today-card">
+                        <div class="fw-600">今日已记 {{ today.sets.length }} 组</div>
+                        <div class="caption">{{ todaySummaryLine }}</div>
+                    </div>
+
+                    <div class="life-board">
+                        <div class="life-card life-card-wide">
+                            <div class="sect-title mt-0">今日饮食</div>
+                            <p class="caption mb-1">点选食物库即可，不用手算热量。不做拍照估热——健身房里搜比拍更快。</p>
+                            <div class="life-stats">
+                                <span><strong>{{ dietDay.totalCalories || 0 }}</strong> kcal</span>
+                                <span><strong>{{ dietDay.totalProteinG || 0 }}</strong> g 蛋白</span>
+                                <span class="caption">{{ dietDay.items.length }} 笔</span>
+                            </div>
+                            <div class="diet-goal-bars" v-if="profile.calorieGoal || profile.proteinGoalG">
+                                <div class="diet-bar-row" v-if="profile.calorieGoal">
+                                    <span class="caption">热量 {{ dietDay.totalCalories || 0 }}/{{ profile.calorieGoal }}</span>
+                                    <div class="diet-bar-track"><div class="diet-bar-fill cal" :style="{width: dietCalPct()+'%'}"></div></div>
+                                </div>
+                                <div class="diet-bar-row" v-if="profile.proteinGoalG">
+                                    <span class="caption">蛋白 {{ dietDay.totalProteinG || 0 }}/{{ profile.proteinGoalG }}g</span>
+                                    <div class="diet-bar-track"><div class="diet-bar-fill pro" :style="{width: dietProPct()+'%'}"></div></div>
+                                </div>
+                            </div>
+                            <div class="row mb-2">
+                                <button type="button" class="ghost" @click="copyYesterdayDiet" :disabled="dietBusy">和昨天一样</button>
+                                <select v-model.number="dietForm.mealType" style="width:88px">
+                                    <option :value="1">早餐</option>
+                                    <option :value="2">午餐</option>
+                                    <option :value="3">晚餐</option>
+                                    <option :value="4">加餐</option>
+                                </select>
+                            </div>
+                            <div class="diet-search-wrap mb-2">
+                                <input type="search" class="w-full" v-model="dietFoodQ" placeholder="搜食物：鸡胸、米饭、黄焖鸡…"
+                                       @focus="dietSearchOpen=true" @input="dietSearchOpen=true">
+                                <div class="diet-search-panel" v-if="dietSearchOpen && filteredFoods.length">
+                                    <button type="button" class="diet-food-hit" v-for="f in filteredFoods" :key="f.name"
+                                            @click="pickFoodAndLog(f)">
+                                        <span class="fw-600">{{ f.name }}</span>
+                                        <span class="caption">{{ f.cal }}kcal · 蛋白 {{ f.protein }}g · 点一下就记</span>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="chips chips-start mb-2">
+                                <button type="button" class="chip" v-for="c in dietCats" :key="c"
+                                        :class="{on: dietCat===c}" @click="dietCat = (dietCat===c ? '' : c)">{{ c || '全部' }}</button>
+                            </div>
+                            <div class="chips chips-start mb-2" v-if="dietFavs.length">
+                                <button type="button" class="chip" v-for="p in dietFavs" :key="'f'+p.name"
+                                        @click="pickFoodAndLog(normalizeFood(p))">★ {{ p.name }}</button>
+                            </div>
+                            <div class="chips chips-start mb-2">
+                                <button type="button" class="chip" v-for="p in dietQuickFoods" :key="p.name"
+                                        @click="pickFoodAndLog(p)">{{ p.name }}</button>
+                            </div>
+                            <details class="diet-manual">
+                                <summary class="caption">手动填（库里没有时才用）</summary>
+                                <div class="row mb-1 mt-2">
+                                    <input type="text" class="flex-1" v-model="dietForm.foodName" placeholder="食物名">
+                                </div>
+                                <div class="row mb-1">
+                                    <input type="text" inputmode="numeric" style="width:90px" v-model="dietForm.calories" placeholder="热量">
+                                    <input type="text" inputmode="decimal" style="width:90px" v-model="dietForm.proteinG" placeholder="蛋白g">
+                                    <button type="button" @click="saveDietQuick" :disabled="dietBusy">记一笔</button>
+                                    <button type="button" class="ghost" @click="saveDietAsFav">收藏</button>
+                                </div>
+                            </details>
+                            <div v-if="dietDay.items.length" class="diet-list mt-2">
+                                <div v-for="it in dietDay.items.slice().reverse().slice(0,8)" :key="it.id" class="diet-row">
+                                    <span>{{ it.mealLabel }} · {{ it.foodName }}</span>
+                                    <span class="caption">{{ it.calories }}kcal · {{ it.proteinG }}g
+                                        <button type="button" class="linkish" @click="deleteDietItem(it.id)">删</button>
+                                    </span>
+                                </div>
+                            </div>
+                            <div v-if="dietHistory.length" class="diet-hist mt-2">
+                                <div class="caption mb-1">近 7 天</div>
+                                <div v-for="d in dietHistory" :key="d.date" class="diet-hist-row caption">
+                                    {{ d.date }} · {{ d.totalCalories || 0 }}kcal · 蛋白 {{ d.totalProteinG || 0 }}g · {{ (d.items||[]).length }} 笔
+                                </div>
+                            </div>
+                        </div>
+                        <div class="life-card">
+                            <div class="sect-title mt-0">体重</div>
+                            <div class="life-stats" v-if="bodySnap.available">
+                                <span><strong>{{ bodySnap.weightKg }}</strong> kg</span>
+                                <span class="caption">{{ bodySnap.date }}</span>
+                            </div>
+                            <div class="caption mb-1" v-if="weightGapLine()">{{ weightGapLine() }}</div>
+                            <div class="caption mb-2" v-else>还没记过体重。每周称 1～2 次比天天盯有用。</div>
+                            <div class="row">
+                                <input type="text" inputmode="decimal" style="width:110px" v-model="bodyForm.weightKg" placeholder="例如 78.5">
+                                <button type="button" @click="saveBodyQuick" :disabled="bodyBusy">更新今日</button>
+                            </div>
+                        </div>
+                        <div class="life-card life-card-wide">
+                            <div class="sect-title mt-0">练铁档案</div>
+                            <p class="caption mb-2">身高 · 目标体重 · 年限 · 伤病 · 饮食目标。热量/蛋白可用 Mifflin 公式一键写入（与 AI 工具同款）。</p>
+                            <div class="row mb-1">
+                                <input type="text" class="flex-1" v-model="profileForm.displayName" placeholder="昵称">
+                                <input type="text" inputmode="decimal" style="width:90px" v-model="profileForm.heightCm" placeholder="身高cm">
+                                <input type="text" inputmode="decimal" style="width:90px" v-model="profileForm.targetWeightKg" placeholder="目标kg">
+                            </div>
+                            <div class="row mb-1">
+                                <select v-model.number="profileForm.goal" style="width:110px">
+                                    <option :value="1">增肌</option>
+                                    <option :value="2">减脂</option>
+                                    <option :value="3">力量</option>
+                                    <option :value="4">塑形</option>
+                                    <option :value="5">健康</option>
+                                </select>
+                                <select v-model.number="profileForm.trainLevel" style="width:110px">
+                                    <option :value="1">新手</option>
+                                    <option :value="2">中级</option>
+                                    <option :value="3">高级</option>
+                                </select>
+                                <input type="text" inputmode="decimal" style="width:90px" v-model="profileForm.trainingYears" placeholder="年限">
+                            </div>
+                            <div class="row mb-1">
+                                <input type="text" inputmode="numeric" style="width:72px" v-model="profileForm.age" placeholder="年龄">
+                                <select v-model="profileForm.sex" style="width:88px">
+                                    <option value="male">男</option>
+                                    <option value="female">女</option>
+                                </select>
+                                <select v-model="profileForm.activityLevel" style="width:120px">
+                                    <option value="sedentary">久坐</option>
+                                    <option value="light">轻量活动</option>
+                                    <option value="moderate">中等（默认）</option>
+                                    <option value="high">高活动</option>
+                                    <option value="very_high">运动员级</option>
+                                </select>
+                                <button type="button" class="ghost" @click="suggestNutrition(false)" :disabled="nutriBusy || profileBusy">只预览</button>
+                                <button type="button" @click="suggestNutrition(true)" :disabled="nutriBusy || profileBusy">
+                                    {{ nutriBusy ? '计算中…' : '一键写入热量/蛋白' }}
+                                </button>
+                            </div>
+                            <div class="row mb-1">
+                                <input type="text" inputmode="numeric" style="width:100px" v-model="profileForm.calorieGoal" placeholder="热量目标">
+                                <input type="text" inputmode="numeric" style="width:100px" v-model="profileForm.proteinGoalG" placeholder="蛋白目标g">
+                                <input type="text" class="flex-1" v-model="profileForm.injuryNote" placeholder="伤病，例如：右肩不适">
+                                <button type="button" @click="saveProfile" :disabled="profileBusy">保存档案</button>
+                            </div>
+                            <div v-if="nutriSuggest" class="result-box caption mt-2 mb-0">
+                                BMR {{ nutriSuggest.bmr }} · TDEE {{ nutriSuggest.tdee }} ·
+                                建议 {{ nutriSuggest.calorieGoal }} kcal /
+                                蛋白 {{ nutriSuggest.proteinGoalG }}g ·
+                                脂 {{ nutriSuggest.fatGoalG }}g · 碳 {{ nutriSuggest.carbGoalG }}g
+                                <span v-if="nutriSuggest.applied"> · 已写入档案</span>
+                                <div class="mt-1">{{ nutriSuggest.tip }}</div>
+                            </div>
+                        </div>
+                        <div class="life-card life-card-wide">
+                            <div class="sect-title mt-0">账号安全</div>
+                            <p class="caption mb-2">{{ accountInfo.hint || '绑定手机后可用验证码登录 / 找回密码' }}</p>
+                            <div class="caption mb-2" v-if="accountInfo.username">
+                                账号 <strong>{{ accountInfo.username }}</strong>
+                                <template v-if="accountInfo.phoneBound"> · 手机 {{ accountInfo.phoneMasked }}</template>
+                                <template v-else> · <span class="field-error" style="display:inline">未绑定手机</span></template>
+                            </div>
+                            <div class="row mb-1">
+                                <input type="text" class="flex-1" inputmode="numeric" maxlength="11"
+                                       v-model="bindForm.phone" placeholder="绑定 / 换绑手机号"
+                                       name="iron-phone-bind" autocomplete="off"
+                                       data-lpignore="true" data-1p-ignore="true">
+                                <input type="text" style="width:100px" inputmode="numeric" maxlength="6"
+                                       v-model="bindForm.code" placeholder="验证码">
+                                <button type="button" class="ghost" :disabled="smsCountdown>0 || smsSending"
+                                        @click="sendSmsCode('bind')">{{ smsBtnText }}</button>
+                                <button type="button" @click="bindPhone" :disabled="accountBusy">{{ accountInfo.phoneBound ? '换绑' : '绑定' }}</button>
+                            </div>
+                            <div class="row mb-1">
+                                <input type="password" class="flex-1" v-model="pwdForm.oldPassword" placeholder="当前密码" autocomplete="current-password">
+                                <input type="password" class="flex-1" v-model="pwdForm.newPassword" placeholder="新密码 ≥6 位" autocomplete="new-password">
+                                <input type="password" class="flex-1" v-model="pwdForm.confirmPassword" placeholder="确认新密码" autocomplete="new-password">
+                                <button type="button" @click="changePassword" :disabled="accountBusy">改密码</button>
+                            </div>
+                            <p class="caption mb-0">演示验证码固定 123456。未绑定手机时，验证码登录会明确提示来这里绑定。</p>
+                        </div>
+                    </div>
+
+                    <div v-if="chartLoadError" class="chart-error-banner">
+                        {{ chartLoadError }}
+                        <button type="button" class="ghost" @click="loadMyCharts" :disabled="busy">重试</button>
+                    </div>
+
+                    <div v-if="hasRealTrainingData">
+                        <div v-if="nextSessionTip" class="next-session-card">
+                            <div class="sect-title mt-0">下一练怎么安排</div>
+                            <p class="next-session-tip">{{ nextSessionTip }}</p>
+                        </div>
+
+                        <div v-if="plateauAlerts.length" class="plateau-board">
+                            <div class="sect-title mt-0">平台期 · 不用先问 AI</div>
+                            <div class="plateau-card"
+                                 v-for="a in plateauAlerts" :key="a.exerciseKey"
+                                 :class="{ broke: a.justBrokePlateau }">
+                                <span class="plateau-tag">{{ a.justBrokePlateau ? '刚破平台' : '卡住中' }}</span>
+                                <span class="plateau-tip">{{ a.tip }}</span>
+                                <p class="plateau-plan">{{ plateauNextPlan(a) }}</p>
+                                <div class="plateau-actions">
+                                    <button type="button" @click="applyPlateauPlan(a)">按这个改 · 问 AI 细化</button>
+                                    <button type="button" class="ghost" @click="askPlateau(a)">只问诊断</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="sect-title mt-0">肌群容量 · 近 {{ muscleVolume.weeks || 4 }} 周</div>
+                        <button type="button" v-if="volumeGapLine" class="volume-gap-banner"
+                                @click="askVolumeGap">{{ volumeGapLine }} · 问 AI</button>
+                        <p class="hint">周均有效组 vs MEV / MAV / MRV——和 AI 教练同一套数。</p>
+                        <div v-if="muscleVolume.available && muscleVolume.items.length" class="volume-board">
+                            <div v-for="it in muscleVolume.items" :key="it.muscle" class="volume-row" :class="volumeVerdictClass(it.verdict)">
+                                <div class="volume-head">
+                                    <span class="fw-600">{{ it.muscle }}</span>
+                                    <span class="caption">{{ it.setsPerWeek }} 组/周 · {{ volumeVerdictText(it.verdict) }}</span>
+                                </div>
+                                <div class="volume-track">
+                                    <div class="volume-fill" :style="{width: volumeBarPct(it)+'%'}"></div>
+                                    <div class="volume-mark mev" :style="{left: (it.mev/it.mrv*100)+'%'}" title="MEV"></div>
+                                    <div class="volume-mark mav" :style="{left: (it.mavUpper/it.mrv*100)+'%'}" title="MAV"></div>
+                                </div>
+                                <div class="volume-scale caption">MEV {{ it.mev }} · MAV {{ it.mavUpper }} · MRV {{ it.mrv }}</div>
+                            </div>
+                        </div>
+                        <div v-else class="hint mb-3">{{ muscleVolume.reason || '近几周还没有可统计的肌群容量。' }}</div>
+
+                        <div class="sect-title">我的训练曲线</div>
+                        <p class="hint">纵轴是「估测最大力量」——用当天最好一组推算你大概能扛多少，不是杠铃片上的数字。</p>
+                        <div v-if="chartSparse" class="chart-sparse-banner">{{ chartSparseTip }}</div>
+                        <div class="row mb-2">
+                            <button type="button" class="ghost" @click="loadMyCharts" :disabled="busy">刷新曲线</button>
+                        </div>
+                        <div class="chart-title">{{ chartSparse ? '今日起点（有数据的动作才会出现）' : '主力力量 · 三大项+肩推/划船 · 近半年' }}</div>
+                        <div ref="chart1El" class="chart-box"></div>
+                        <div v-if="chartNotesDisplay.length" class="chart-notes" aria-label="曲线说明">
+                            <div v-for="(n, i) in chartNotesDisplay" :key="i" class="chart-note" :class="n.kind">{{ n.label }}</div>
+                        </div>
+                        <div class="chart-title">每周训练量</div>
+                        <div ref="chart2El" class="chart-box"></div>
+                        <template v-if="bodyWeightSeries.length">
+                            <div class="chart-title">体重走势</div>
+                            <div ref="chart3El" class="chart-box chart-box-sm"></div>
+                        </template>
+                    </div>
+                    <div v-else>
+                        <div class="sect-title mt-0">新号冷启动</div>
+                        <p class="hint">空号没有曲线/容量/平台期是正常的。可以先打卡，或一键载入半年演示剧本（含卧推平台期与容量缺口）——立刻能问 AI、能看图。</p>
+                        <div class="row mb-3">
+                            <button type="button" @click="seedDemoStory" :disabled="seedBusy">
+                                {{ seedBusy ? '生成中…' : '一键载入演示剧本' }}
+                            </button>
+                            <button type="button" class="ghost" @click="goTrain">去打卡第一组</button>
+                            <button type="button" class="ghost" @click="loadMyCharts" :disabled="busy">再拉一次</button>
+                        </div>
+                        <div class="chart-title">参考示意（不是你的成绩）</div>
+                        <div ref="chartDemoBig3" class="chart-box"></div>
+                        <div class="chart-title">参考 · 每周训练量</div>
+                        <div ref="chartDemoVol" class="chart-box"></div>
+                    </div>
+                </div>
+
+                <!-- 训练历史 -->
+                <div v-show="meSub==='history'">
+                    <div class="sect-title mt-0">训练历史</div>
+                    <p class="hint">翻日历看上次怎么练；整课「再练一遍」直接带进今日打卡。</p>
+                    <div class="row mb-2">
+                        <button type="button" class="ghost" @click="loadHistory" :disabled="historyBusy">刷新</button>
+                    </div>
+                    <div v-if="!historyList.length && !historyBusy" class="hint">还没有历史课次。去打卡记几组就有了。</div>
+                    <div class="history-list">
+                        <div class="history-row" v-for="h in historyList" :key="h.sessionId"
+                             :class="{ open: historyOpenId === String(h.sessionId) }">
+                            <button type="button" class="history-head" @click="toggleHistory(h)">
+                                <span class="fw-600">{{ h.date }} · {{ h.sessionTypeLabel }}</span>
+                                <span class="caption">{{ h.workingSets }} 有效组 · {{ h.volumeKg }} kg
+                                    <span v-if="h.demo"> · 样板</span>
+                                </span>
+                                <span class="caption">{{ (h.exerciseNames || []).join('、') }}</span>
+                            </button>
+                            <div v-if="historyOpenId === String(h.sessionId)" class="history-body">
+                                <div class="row mb-2">
+                                    <button type="button" @click="reuseHistorySession(h)" :disabled="historyBusy">整课再练一遍</button>
+                                    <button type="button" class="ghost" @click="loadHistoryDetail(h)">刷新明细</button>
+                                </div>
+                                <div v-for="s in (historyDetail && historyDetail.sets) || []" :key="s.setId" class="set-card">
+                                    <div class="set-main">
+                                        <span>{{ s.exerciseName }} · {{ s.warmup ? '热身' : ('第'+s.setIndex+'组') }}</span>
+                                        <span>{{ s.weightKg }}kg × {{ s.reps }}</span>
+                                    </div>
+                                    <button type="button" class="ghost btn-xs" @click="deleteHistorySet(s)">删除这组</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 周计划 -->
+                <div v-show="meSub==='plan'">
+                    <div class="sect-title mt-0">7 日训练日程（可改）</div>
+                    <p class="hint">换动作、改组数、标休息日都会落库。勾完成也会同步到服务器。</p>
+                    <div class="hint mb-2" v-if="weekPlan.intensityReason">
+                        强度建议：×{{ weekPlan.intensityFactor }} · {{ weekPlan.intensityReason }}
+                    </div>
+                    <div class="hint mb-2" v-if="weekPlan.volumeGaps && weekPlan.volumeGaps.length">
+                        本周容量缺口：{{ weekPlan.volumeGaps.join('、') }}
+                    </div>
+                    <div class="row mb-2">
+                        <button type="button" @click="applyTodayPlan">今日安排 → 打开打卡</button>
+                        <button type="button" class="ghost" @click="saveWeekPlanNow" :disabled="planSaving">保存修改</button>
+                        <button type="button" class="ghost" @click="regenerateWeekPlan" :disabled="planSaving">重新生成</button>
+                    </div>
+                    <div class="row mb-2">
+                        <button type="button" class="ghost" @click="reportDeviation('BAD_FEEL')">今天状态差</button>
+                        <button type="button" class="ghost" @click="reportDeviation('INJURY_HEAVY')">有伤仍硬上</button>
+                    </div>
+                    <div class="week-plan-list">
+                        <div class="week-plan-row" v-for="(d, idx) in (weekPlan.days || [])" :key="d.date"
+                             :class="{ done: planDone[d.date], rest: d.restDay }">
+                            <label class="row" style="width:100%;gap:8px">
+                                <input type="checkbox" :checked="!!planDone[d.date]" @change="togglePlanDone(d.date)">
+                                <span class="fw-600">{{ weekdayLabel(d.weekday) }} · {{ d.date }}{{ idx===0 ? '（今天）' : '' }}</span>
+                                <button type="button" class="ghost btn-xs" @click="toggleRestDay(d)">{{ d.restDay ? '取消休息' : '标休息日' }}</button>
+                            </label>
+                            <input type="text" class="w-full mb-1" v-model="d.focus" @change="markPlanDirty" placeholder="今日焦点">
+                            <input type="text" class="w-full mb-1" v-model="d.note" @change="markPlanDirty" placeholder="备注（可选）">
+                            <div v-for="(ex, exi) in (d.exercises || [])" :key="d.date+'-'+exi" class="plan-ex-row">
+                                <input type="text" v-model="ex.name" @change="markPlanDirty" placeholder="动作名" style="flex:1.4">
+                                <input type="text" inputmode="decimal" v-model="ex.targetWeightKg" @change="markPlanDirty" placeholder="kg" style="width:64px">
+                                <input type="text" inputmode="numeric" v-model="ex.targetReps" @change="markPlanDirty" placeholder="次" style="width:48px">
+                                <input type="text" inputmode="numeric" v-model="ex.targetSets" @change="markPlanDirty" placeholder="组" style="width:48px">
+                                <button type="button" class="ghost btn-xs" @click="removePlanExercise(d, exi)">删</button>
+                            </div>
+                            <button type="button" class="ghost btn-xs" @click="addPlanExercise(d)">+ 动作</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 会员场馆 -->
+                <div v-show="meSub==='venue'">
+                    <div class="sect-title mt-0">今日到店</div>
+                    <p class="hint">大按钮签到；余次和到期一眼可见。约课用时间轴，不进管理员后台。</p>
+                    <button type="button" class="venue-checkin-main" @click="memberCheckIn" :disabled="venueBusy">
+                        {{ venueBusy ? '处理中…' : '✅ 今日到店 · 签到消次' }}
+                    </button>
+                    <div class="row mb-3">
+                        <button type="button" class="ghost" @click="loadVenue" :disabled="venueBusy">刷新</button>
+                    </div>
+                    <div v-if="venueMsg" class="result-box">{{ venueMsg }}</div>
+                    <div class="sect-title">我的卡</div>
+                    <div v-if="!venueCards.length" class="hint mb-2">还没有会员卡。可让管理员开卡，或答辩时用后台给会员 1 开卡。</div>
+                    <div v-for="c in venueCards" :key="c.id" class="venue-row">
+                        <span class="fw-600">{{ c.cardName || ('卡#'+c.id) }}</span>
+                        <span class="caption">剩余 {{ c.remainCount }} · 至 {{ c.endDate }}</span>
+                    </div>
+                    <div class="sect-title">可约课程</div>
+                    <div v-if="!venueCourses.length" class="hint mb-2">近两周没有可约课程。</div>
+                    <div v-for="c in venueCourses" :key="c.id" class="venue-row">
+                        <div>
+                            <div class="fw-600">{{ c.name }}</div>
+                            <div class="caption">{{ c.courseTime }} · {{ c.room || '场地待定' }} · {{ c.bookedCnt }}/{{ c.capacity }}</div>
+                        </div>
+                        <button type="button" class="btn-xs" :disabled="venueBusy || c.status!==1" @click="bookCourse(c.id)">预约</button>
+                    </div>
+                    <div class="sect-title">我的预约</div>
+                    <div v-if="!venueBookings.length" class="hint mb-2">还没有预约。上面挑一门课点预约即可；开课前可取消。</div>
+                    <div v-for="b in venueBookings" :key="b.id" class="venue-row">
+                        <div>
+                            <div class="fw-600">{{ b.courseName }}</div>
+                            <div class="caption">{{ b.courseTime }} · {{ b.room || '场地待定' }} · {{ b.statusLabel }}</div>
+                            <div class="caption">{{ b.ruleHint }}</div>
+                        </div>
+                        <button type="button" class="ghost btn-xs" v-if="b.status===1" @click="cancelBooking(b.id)">取消</button>
+                    </div>
+                    <div class="sect-title">消费流水</div>
+                    <div v-for="r in venueConsume.slice(0,12)" :key="r.id || r.bizNo" class="venue-row caption">
+                        {{ r.createTime || '' }} · 类型 {{ r.consumeType }} · 次数 {{ r.consumeCount }}
+                    </div>
+                </div>
+
+                <!-- 知识库收进看板底部，少一层 Tab -->
+                <div v-show="meSub==='mine'" class="mt-4">
+                    <div class="sect-title">动作知识库</div>
+                    <p class="hint">ES 可用走 RAG；不可用自动本地要领兜底，答辩不会空白。</p>
+                    <div class="row mb-2">
+                        <input type="text" class="flex-1" v-model="knowledgeQ" placeholder="例如：杠铃深蹲膝盖别内扣怎么办">
+                        <button type="button" @click="askKnowledge" :disabled="knowledgeBusy">
+                            {{ knowledgeBusy ? '检索中…' : '问知识库' }}
+                        </button>
+                    </div>
+                    <div class="chips chips-start mb-2">
+                        <button type="button" class="chip" @click="knowledgeQ='杠铃卧推常见错误和呼吸要点'; askKnowledge()">卧推要点</button>
+                        <button type="button" class="chip" @click="knowledgeQ='硬拉怎么呼吸才安全'; askKnowledge()">硬拉呼吸</button>
+                        <button type="button" class="chip" @click="knowledgeQ='肩推肩峰撞击怎么避免'; askKnowledge()">肩推安全</button>
+                    </div>
+                    <div class="knowledge-answer" v-if="knowledgeA">{{ knowledgeA }}</div>
+
+                    <div class="sect-title mt-4">答辩自检</div>
+                    <p class="hint">一键探活：登录、动作库、平台期、周计划、知识库、会员卡。</p>
+                    <button type="button" class="ghost mb-2" @click="runSelfCheck" :disabled="selfCheck.running">
+                        {{ selfCheck.running ? '检查中…' : '一键自检' }}
+                    </button>
+                    <div v-for="(it,i) in selfCheck.items" :key="'sc'+i" class="self-check-row" :class="{ok: it.ok, bad: !it.ok}">
+                        {{ it.ok ? '✓' : '✗' }} {{ it.title }} · {{ it.detail }}
+                    </div>
+                </div>
+            </section>
+
+            <!-- ===== 场馆后台（仅管理员） ===== -->
+            <section v-show="tab==='gym' && isAdmin" class="panel panel-admin" aria-label="场馆后台">
+                <div class="admin-ribbon">后台</div>
+                <h2 class="h2">场馆后台</h2>
+                <p class="hint">会员档案 · 课程预约 · 卡项 · 器材 · 消费流水</p>
+                <div class="mini" v-if="stats">
+                    <span class="badge ok">活跃会员 {{ stats.activeMember }}</span>
+                    <span class="badge">教练 {{ stats.coachTotal }}</span>
+                    <span class="badge">课程 {{ stats.courseTotal }}</span>
+                    <span class="badge">有效卡 {{ stats.validCard }}</span>
+                    <span class="badge">预约 {{ stats.bookingTotal }}</span>
+                    <span class="badge">消课 {{ stats.consumeTotal }}</span>
+                </div>
+                <div class="row mt-3">
+                    <button type="button" class="ghost" @click="checkInDemo" :disabled="gymBusy">会员1 签到消次</button>
+                    <button type="button" class="ghost" @click="bookDemo" :disabled="gymBusy">会员1 预约课程</button>
+                    <button type="button" class="ghost" @click="loadGym" :disabled="gymBusy">刷新数据</button>
+                </div>
+                <div v-if="gymMsg" class="result-box">{{ gymMsg }}</div>
+
+                <div class="tabs gym-subtabs scroll-x mt-4">
+                    <button type="button" class="tab" :class="{active: gymTab==='member'}" @click="gymTab='member'">会员</button>
+                    <button type="button" class="tab" :class="{active: gymTab==='coach'}" @click="gymTab='coach'">教练</button>
+                    <button type="button" class="tab" :class="{active: gymTab==='course'}" @click="gymTab='course'">课程</button>
+                    <button type="button" class="tab" :class="{active: gymTab==='card'}" @click="gymTab='card'">卡项</button>
+                    <button type="button" class="tab" :class="{active: gymTab==='booking'}" @click="gymTab='booking'">预约</button>
+                    <button type="button" class="tab" :class="{active: gymTab==='equipment'}" @click="gymTab='equipment'">器材</button>
+                    <button type="button" class="tab" :class="{active: gymTab==='consume'}" @click="gymTab='consume'">消费流水</button>
+                    <button type="button" class="tab" :class="{active: gymTab==='forum'}" @click="gymTab='forum'; loadAdminForum()">社区审核</button>
+                </div>
+
+                <div v-if="gymBusy && !gymLoaded" class="mt-4">
+                    <div class="skeleton-line"></div>
+                    <div class="skeleton-line"></div>
+                    <div class="skeleton-line"></div>
+                </div>
+
+                <div v-show="gymTab==='member' && !(gymBusy && !gymLoaded)" class="mt-3">
+                    <div class="row"><button type="button" @click="openForm('member',null)">+ 新增会员</button></div>
+                    <div class="table-scroll" v-if="members.length">
+                        <table class="grid">
+                            <thead><tr><th>ID</th><th>姓名</th><th>电话</th><th>性别</th><th>目标</th><th>状态</th><th>操作</th></tr></thead>
+                            <tbody>
+                            <tr v-for="m in members" :key="m.id">
+                                <td>{{ m.id }}</td><td>{{ m.name }}</td><td>{{ m.phone }}</td>
+                                <td>{{ genderText(m.gender) }}</td><td>{{ goalText(m.goal) }}</td><td>{{ statusText(m.status) }}</td>
+                                <td class="ops">
+                                    <button class="ghost" @click="openForm('member',m)">编辑</button>
+                                    <span class="ops-extra">
+                                        <button class="ghost" @click="domainAction('member',m.id,'挂失','/api/members/'+m.id+'/loss')">挂失</button>
+                                        <button class="ghost" @click="domainAction('member',m.id,'冻结','/api/members/'+m.id+'/freeze')">冻结</button>
+                                        <button class="ghost" @click="domainAction('member',m.id,'恢复','/api/members/'+m.id+'/restore')">恢复</button>
+                                    </span>
+                                    <span class="ops-more">
+                                        <button class="ops-more-btn" @click.stop="toggleMoreMenu('member-'+m.id)">⋯ 更多</button>
+                                        <div class="ops-more-menu" v-if="moreMenu==='member-'+m.id" @click.stop>
+                                            <button class="ghost" @click="domainAction('member',m.id,'挂失','/api/members/'+m.id+'/loss'); moreMenu=null">挂失</button>
+                                            <button class="ghost" @click="domainAction('member',m.id,'冻结','/api/members/'+m.id+'/freeze'); moreMenu=null">冻结</button>
+                                            <button class="ghost" @click="domainAction('member',m.id,'恢复','/api/members/'+m.id+'/restore'); moreMenu=null">恢复</button>
+                                        </div>
+                                    </span>
+                                    <button class="danger" @click="deleteCrud('member',m.id)">删除</button>
+                                </td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div v-else class="empty-table">暂无数据，点上方新增</div>
+                </div>
+
+                <div v-show="gymTab==='coach' && !(gymBusy && !gymLoaded)" class="mt-3">
+                    <div class="row"><button @click="openForm('coach',null)">+ 新增教练</button></div>
+                    <div class="table-scroll" v-if="coaches.length">
+                        <table class="grid">
+                            <thead><tr><th>ID</th><th>姓名</th><th>电话</th><th>级别</th><th>专长</th><th>简介</th><th>操作</th></tr></thead>
+                            <tbody>
+                            <tr v-for="c in coaches" :key="c.id">
+                                <td>{{ c.id }}</td><td>{{ c.name }}</td><td>{{ c.phone }}</td>
+                                <td>{{ levelText(c.level) }}</td><td>{{ c.specialty }}</td><td>{{ c.intro }}</td>
+                                <td class="ops">
+                                    <button class="ghost" @click="openForm('coach',c)">编辑</button>
+                                    <button class="danger" @click="deleteCrud('coach',c.id)">删除</button>
+                                </td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div v-else class="empty-table">暂无数据，点上方新增</div>
+                </div>
+
+                <div v-show="gymTab==='course' && !(gymBusy && !gymLoaded)" class="mt-3">
+                    <div class="row"><button @click="openForm('course',null)">+ 新增课程</button></div>
+                    <div class="table-scroll" v-if="courses.length">
+                        <table class="grid">
+                            <thead><tr><th>ID</th><th>名称</th><th>教练</th><th>容量</th><th>已约</th><th>时间</th><th>状态</th><th>操作</th></tr></thead>
+                            <tbody>
+                            <tr v-for="c in courses" :key="c.id">
+                                <td>{{ c.id }}</td><td>{{ c.name }}</td><td>{{ c.coachId }}</td>
+                                <td>{{ c.capacity }}</td><td>{{ c.bookedCnt }}</td><td>{{ c.courseTime }}</td><td>{{ courseStatusText(c.status) }}</td>
+                                <td class="ops">
+                                    <button class="ghost" @click="openForm('course',c)">编辑</button>
+                                    <button class="danger" @click="deleteCrud('course',c.id)">删除</button>
+                                </td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div v-else class="empty-table">暂无数据，点上方新增</div>
+                </div>
+
+                <div v-show="gymTab==='card' && !(gymBusy && !gymLoaded)" class="mt-3">
+                    <div class="row"><button @click="openForm('card',null)">+ 开卡</button></div>
+                    <div class="table-scroll" v-if="cards.length">
+                        <table class="grid">
+                            <thead><tr><th>ID</th><th>会员</th><th>名称</th><th>类型</th><th>总/余</th><th>起~止</th><th>价格</th><th>状态</th><th>操作</th></tr></thead>
+                            <tbody>
+                            <tr v-for="c in cards" :key="c.id">
+                                <td>{{ c.id }}</td><td>{{ c.memberId }}</td><td>{{ c.cardName }}</td>
+                                <td>{{ cardTypeText(c.cardType) }}</td><td>{{ c.totalCount }}/{{ c.remainCount }}</td>
+                                <td>{{ c.startDate }} ~ {{ c.endDate }}</td><td>{{ c.price }}</td><td>{{ cardStatusText(c.status) }}</td>
+                                <td class="ops">
+                                    <button class="ghost" @click="openForm('card',c)">编辑</button>
+                                    <span class="ops-extra">
+                                        <button class="ghost" @click="cardRenew(c.id)">续费</button>
+                                        <button class="ghost" @click="cardExtend(c.id)">延期</button>
+                                        <button class="ghost" @click="domainAction('card',c.id,'停用','/api/cards/'+c.id+'/disable')">停用</button>
+                                    </span>
+                                    <span class="ops-more">
+                                        <button class="ops-more-btn" @click.stop="toggleMoreMenu('card-'+c.id)">⋯ 更多</button>
+                                        <div class="ops-more-menu" v-if="moreMenu==='card-'+c.id" @click.stop>
+                                            <button class="ghost" @click="cardRenew(c.id); moreMenu=null">续费</button>
+                                            <button class="ghost" @click="cardExtend(c.id); moreMenu=null">延期</button>
+                                            <button class="ghost" @click="domainAction('card',c.id,'停用','/api/cards/'+c.id+'/disable'); moreMenu=null">停用</button>
+                                        </div>
+                                    </span>
+                                    <button class="danger" @click="deleteCrud('card',c.id)">删除</button>
+                                </td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div v-else class="empty-table">暂无数据，点上方新增</div>
+                </div>
+
+                <div v-show="gymTab==='booking' && !(gymBusy && !gymLoaded)" class="mt-3">
+                    <div class="row"><button @click="openForm('booking',null)">+ 预约课程</button></div>
+                    <div class="table-scroll" v-if="bookings.length">
+                        <table class="grid">
+                            <thead><tr><th>ID</th><th>会员</th><th>课程</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+                            <tbody>
+                            <tr v-for="b in bookings" :key="b.id">
+                                <td>{{ b.id }}</td><td>{{ b.memberId }}</td><td>{{ b.courseId }}</td>
+                                <td>{{ bookingStatusText(b.status) }}</td><td>{{ b.createTime }}</td>
+                                <td class="ops">
+                                    <button class="ghost" @click="domainAction('booking',b.id,'取消预约','/api/bookings/'+b.id+'/cancel')">取消</button>
+                                    <span class="ops-extra">
+                                        <button class="ghost" @click="domainAction('booking',b.id,'完成预约','/api/bookings/'+b.id+'/complete')">完成</button>
+                                    </span>
+                                    <span class="ops-more">
+                                        <button class="ops-more-btn" @click.stop="toggleMoreMenu('booking-'+b.id)">⋯ 更多</button>
+                                        <div class="ops-more-menu" v-if="moreMenu==='booking-'+b.id" @click.stop>
+                                            <button class="ghost" @click="domainAction('booking',b.id,'完成预约','/api/bookings/'+b.id+'/complete'); moreMenu=null">完成</button>
+                                        </div>
+                                    </span>
+                                    <button class="danger" @click="deleteCrud('booking',b.id)">删除</button>
+                                </td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div v-else class="empty-table">暂无数据，点上方新增</div>
+                </div>
+
+                <div v-show="gymTab==='equipment' && !(gymBusy && !gymLoaded)" class="mt-3">
+                    <div class="row"><button @click="openForm('equipment',null)">+ 登记器材</button></div>
+                    <div class="table-scroll" v-if="equipment.length">
+                        <table class="grid">
+                            <thead><tr><th>ID</th><th>名称</th><th>类别</th><th>位置</th><th>状态</th><th>购买日</th><th>维护日</th><th>操作</th></tr></thead>
+                            <tbody>
+                            <tr v-for="e in equipment" :key="e.id">
+                                <td>{{ e.id }}</td><td>{{ e.name }}</td><td>{{ categoryText(e.category) }}</td>
+                                <td>{{ e.location }}</td><td>{{ equipStatusText(e.status) }}</td>
+                                <td>{{ e.buyDate }}</td><td>{{ e.lastMaint }}</td>
+                                <td class="ops">
+                                    <button class="ghost" @click="openForm('equipment',e)">编辑</button>
+                                    <span class="ops-extra">
+                                        <button class="ghost" @click="domainAction('equipment',e.id,'报修','/api/equipment/'+e.id+'/repair')">报修</button>
+                                        <button class="ghost" @click="domainAction('equipment',e.id,'维护','/api/equipment/'+e.id+'/maintain')">维护</button>
+                                        <button class="ghost" @click="domainAction('equipment',e.id,'停用','/api/equipment/'+e.id+'/disable')">停用</button>
+                                    </span>
+                                    <span class="ops-more">
+                                        <button class="ops-more-btn" @click.stop="toggleMoreMenu('equipment-'+e.id)">⋯ 更多</button>
+                                        <div class="ops-more-menu" v-if="moreMenu==='equipment-'+e.id" @click.stop>
+                                            <button class="ghost" @click="domainAction('equipment',e.id,'报修','/api/equipment/'+e.id+'/repair'); moreMenu=null">报修</button>
+                                            <button class="ghost" @click="domainAction('equipment',e.id,'维护','/api/equipment/'+e.id+'/maintain'); moreMenu=null">维护</button>
+                                            <button class="ghost" @click="domainAction('equipment',e.id,'停用','/api/equipment/'+e.id+'/disable'); moreMenu=null">停用</button>
+                                        </div>
+                                    </span>
+                                    <button class="danger" @click="deleteCrud('equipment',e.id)">删除</button>
+                                </td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div v-else class="empty-table">暂无数据，点上方新增</div>
+                </div>
+
+                <div v-show="gymTab==='consume' && !(gymBusy && !gymLoaded)" class="mt-3">
+                    <div class="table-scroll" v-if="consumeRecords.length">
+                        <table class="grid">
+                            <thead><tr><th>ID</th><th>业务单号</th><th>会员</th><th>卡</th><th>课程</th><th>类型</th><th>次数</th><th>时间</th></tr></thead>
+                            <tbody>
+                            <tr v-for="r in consumeRecords" :key="r.id">
+                                <td>{{ r.id }}</td><td>{{ r.bizNo }}</td><td>{{ r.memberId }}</td>
+                                <td>{{ r.cardId }}</td><td>{{ r.courseId }}</td>
+                                <td>{{ consumeTypeText(r.consumeType) }}</td><td>{{ r.consumeCount }}</td><td>{{ r.createTime }}</td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div v-else class="empty-table">暂无数据，点上方「会员1 签到消次」生成</div>
+                </div>
+
+                <div v-show="gymTab==='forum'" class="mt-3">
+                    <div class="row mb-2" style="gap:8px">
+                        <button type="button" class="ghost btn-xs" :class="{on: adminForumStatus===0}" @click="adminForumStatus=0; loadAdminForum()">待审</button>
+                        <button type="button" class="ghost btn-xs" :class="{on: adminForumStatus===1}" @click="adminForumStatus=1; loadAdminForum()">已通过</button>
+                        <button type="button" class="ghost btn-xs" :class="{on: adminForumStatus===2}" @click="adminForumStatus=2; loadAdminForum()">已拒绝</button>
+                        <button type="button" class="ghost" @click="loadAdminForum">刷新</button>
+                    </div>
+                    <div v-if="adminForumBusy" class="hint">加载中…</div>
+                    <div v-else-if="!adminForumPosts.length" class="empty-table">暂无帖子</div>
+                    <div class="table-scroll" v-else>
+                        <table class="grid">
+                            <thead><tr><th>ID</th><th>标题</th><th>作者</th><th>分类</th><th>审核说明</th><th>操作</th></tr></thead>
+                            <tbody>
+                            <tr v-for="p in adminForumPosts" :key="p.id">
+                                <td>{{ p.id }}</td>
+                                <td>{{ p.title }}</td>
+                                <td>{{ p.authorName }}</td>
+                                <td>{{ forumCatText(p.category) }}</td>
+                                <td>{{ p.aiAuditMsg || '—' }}</td>
+                                <td class="ops">
+                                    <button class="ghost" v-if="p.status!==1" @click="auditForumPost(p.id,'pass')">通过</button>
+                                    <button class="ghost" v-if="p.status!==2" @click="auditForumPost(p.id,'reject')">拒绝</button>
+                                    <button class="danger" @click="adminDeleteForum(p.id)">删除</button>
+                                </td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="admin-tools mt-5">
+                    <div class="sect-title mt-0">系统自检</div>
+                    <p class="hint">服务状态与示例数据，仅管理员。</p>
+                    <div class="health-row">
+                        <span class="health-lamp" :class="healthClass(health.ai)">
+                            <span class="dot"></span>
+                            {{ health.ai === true ? 'AI 正常' : health.ai === false ? 'AI 服务异常' : 'AI 未检测' }}
+                        </span>
+                        <span class="health-lamp" :class="healthClass(health.mysql)">
+                            <span class="dot"></span>
+                            {{ health.mysql === true ? '数据库正常' : health.mysql === false ? '数据库异常' : '数据库未检测' }}
+                        </span>
+                        <span class="health-lamp" :class="healthClass(health.redis)">
+                            <span class="dot"></span>
+                            {{ health.redis === true ? '缓存正常' : health.redis === false ? '缓存异常' : '缓存未检测' }}
+                        </span>
+                        <span class="health-lamp" :class="healthClass(health.tools)">
+                            <span class="dot"></span>
+                            {{ health.tools === true ? '教练工具 ' + (health.toolCount||0) + ' 个' : health.tools === false ? '工具未就绪' : '工具未检测' }}
+                        </span>
+                    </div>
+                    <div class="row mt-3">
+                        <button type="button" class="ghost" @click="runHealthCheck" :disabled="health.checking">
+                            {{ health.checking ? '检测中…' : '重新检测' }}
+                        </button>
+                    </div>
+                    <div class="row mt-2">
+                        <label class="hint"><input type="radio" value="sync" v-model="mode"> 同步对话</label>
+                        <label class="hint"><input type="radio" value="stream" v-model="mode"> 流式对话</label>
+                    </div>
+                    <div class="row mt-2">
+                        <button type="button" class="ghost" @click="reportDeviation('SKIP_SET')">临时减一组</button>
+                        <button type="button" class="ghost" @click="reportDeviation('SWAP')">换动作</button>
+                        <button type="button" class="ghost" @click="reportDeviation('BAD_FEEL')">状态差</button>
+                        <button type="button" class="ghost" @click="triggerRemind">跑教练提醒</button>
+                    </div>
+                    <div class="row mt-2">
+                        <button type="button" @click="regenerate" :disabled="busy">重新生成示例数据</button>
+                        <button type="button" class="danger" @click="clearDemo" :disabled="busy">清空示例数据</button>
+                    </div>
+                    <div v-if="demoResult" class="result-box">{{ demoResult }}</div>
+                    <div v-if="devMsg" class="result-box">{{ devMsg }}</div>
+                </div>
+            </section>
+        </main>
+
+        <!-- CRUD 弹窗 -->
+        <div class="modal-mask" v-if="form.open" @click.self="closeForm">
+            <div class="modal">
+                <div class="modal-title">{{ formTitle }}</div>
+                <div class="form-grid">
+                    <template v-for="f in currentFields" :key="f.k">
+                        <label>{{ f.label }}<span v-if="f.required" class="req">*</span></label>
+                        <div>
+                            <select v-if="f.type==='select'" v-model="formModel[f.k]"
+                                    :class="{ 'input-invalid': formErrors[f.k] }" @change="formErrors[f.k]=''">
+                                <option v-for="o in f.options" :key="o[0]" :value="o[0]">{{ o[1] }}</option>
+                            </select>
+                            <input v-else-if="f.type==='date'" type="date" v-model="formModel[f.k]"
+                                   :class="{ 'input-invalid': formErrors[f.k] }" @input="formErrors[f.k]=''">
+                            <input v-else-if="f.type==='datetime'" type="datetime-local" v-model="formModel[f.k]"
+                                   :class="{ 'input-invalid': formErrors[f.k] }" @input="formErrors[f.k]=''">
+                            <input v-else-if="f.type==='number'" type="number" v-model="formModel[f.k]"
+                                   :class="{ 'input-invalid': formErrors[f.k] }" @input="formErrors[f.k]=''">
+                            <input v-else type="text" v-model="formModel[f.k]" :placeholder="f.label"
+                                   :class="{ 'input-invalid': formErrors[f.k] }" @input="formErrors[f.k]=''">
+                            <div v-if="formErrors[f.k]" class="field-error">{{ formErrors[f.k] }}</div>
+                        </div>
+                    </template>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="ghost" @click="closeForm">取消</button>
+                    <button type="button" @click="saveCrud" :disabled="gymBusy">{{ gymBusy ? '保存中…' : '保存' }}</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="modal-mask" v-if="dialog.open" @click.self="resolveDialog(false)">
+            <div class="modal dialog-sm" role="dialog" aria-modal="true">
+                <div class="modal-title">{{ dialog.title }}</div>
+                <div class="dialog-msg">{{ dialog.message }}</div>
+                <div v-if="dialog.needInput">
+                    <label class="caption">{{ dialog.inputLabel }}</label>
+                    <input type="number" class="w-full mt-2" v-model="dialog.inputValue"
+                           :class="{ 'input-invalid': dialog.inputError }" @keyup.enter="resolveDialog(true)">
+                    <div v-if="dialog.inputError" class="field-error">{{ dialog.inputError }}</div>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="ghost" @click="resolveDialog(false)">取消</button>
+                    <button type="button" @click="resolveDialog(true)">确定</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="modal-mask" v-if="onboard.open" @click.self="skipOnboard">
+            <div class="modal" role="dialog" aria-modal="true" aria-label="完善档案">
+                <div class="modal-title">欢迎加入 · 先填两笔</div>
+                <p class="caption mb-2">昵称和目标会写进 AI 教练与饮食进度；可按公式一键算出热量/蛋白目标。</p>
+                <label class="caption">怎么称呼你</label>
+                <input class="w-full mb-2" type="text" v-model="onboard.displayName" placeholder="例如：铁友" maxlength="32">
+                <div class="row mb-2">
+                    <select class="flex-1" v-model.number="onboard.goal">
+                        <option :value="1">增肌</option>
+                        <option :value="2">减脂</option>
+                        <option :value="3">力量</option>
+                        <option :value="4">塑形</option>
+                        <option :value="5">健康</option>
+                    </select>
+                    <select class="flex-1" v-model.number="onboard.trainLevel">
+                        <option :value="1">新手</option>
+                        <option :value="2">中级</option>
+                        <option :value="3">高级</option>
+                    </select>
+                </div>
+                <div class="row mb-2">
+                    <input class="flex-1" type="text" inputmode="decimal" v-model="onboard.heightCm" placeholder="身高 cm">
+                    <input class="flex-1" type="text" inputmode="decimal" v-model="onboard.weightKg" placeholder="体重 kg">
+                    <input style="width:72px" type="text" inputmode="numeric" v-model="onboard.age" placeholder="年龄">
+                </div>
+                <label class="row mb-2" style="align-items:center;gap:8px;cursor:pointer">
+                    <input type="checkbox" v-model="onboard.applyNutrition"> 按目标一键写入热量/蛋白（Mifflin 公式，与 AI 同款）
+                </label>
+                <p class="caption mb-2" v-if="!accountInfo.phoneBound">建议稍后在「我的 → 账号安全」绑定手机号，否则验证码登录 / 找回密码不可用。</p>
+                <div class="modal-actions">
+                    <button type="button" class="ghost" @click="skipOnboard">先跳过</button>
+                    <button type="button" @click="finishOnboard" :disabled="onboard.busy">{{ onboard.busy ? '保存中…' : '保存并开始' }}</button>
+                </div>
+            </div>
+        </div>
+
+        <nav class="bottom-tabbar" aria-label="底部导航">
+            <button type="button" class="tab" :class="{active: tab==='train'}" @click="tab='train'">
+                <span class="ico" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M6.5 8.5v7M17.5 8.5v7M4 10.5v3M20 10.5v3M6.5 12h11"/></svg>
+                </span><span>打卡</span>
+            </button>
+            <button type="button" class="tab" :class="{active: tab==='forum'}" @click="goForum">
+                <span class="ico" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M4 6h16v9H8l-4 3V6z"/></svg>
+                </span><span>社区</span>
+            </button>
+            <button type="button" class="tab" :class="{active: tab==='chat'}" @click="tab='chat'">
+                <span class="ico" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><rect x="5" y="7" width="14" height="10" rx="3"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><path d="M9 17v2h6v-2"/></svg>
+                </span><span>教练</span>
+            </button>
+            <button type="button" class="tab" :class="{active: tab==='me'}" @click="goMe">
+                <span class="ico" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.2"/><path d="M5.5 19c1.6-3.2 4-4.8 6.5-4.8S16.9 15.8 18.5 19"/></svg>
+                </span><span>我的</span>
+            </button>
+            <button type="button" class="tab tab-admin" v-if="isAdmin" :class="{active: tab==='gym'}" @click="goGym">
+                <span class="ico" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M4 8h16M4 12h16M4 16h10"/><path d="M18 15l2 2 3-4"/></svg>
+                </span><span>后台</span>
+            </button>
+        </nav>
+    </div>
+</div>
+
+<script>
+/* 挂 Vue 之前先清掉会炸 JSON.parse 的脏缓存，避免整页露出 {{ }} */
+(function () {
+    function scrub(key) {
+        try {
+            var raw = localStorage.getItem(key);
+            if (raw == null || raw === '') return;
+            JSON.parse(raw);
+        } catch (e) {
+            try { localStorage.removeItem(key); } catch (e2) {}
+        }
+    }
+    try {
+        ['gym_plan_done', 'gym_remind_dismiss', 'gym_diet_favs', 'gym_chat_history'].forEach(scrub);
+        Object.keys(localStorage).forEach(function (k) {
+            if (k.indexOf('gym_chat_history') === 0) scrub(k);
+        });
+    } catch (e) {}
+})();
+</script>
+<script src="vendor/vue.global.prod.js"></script>
+<script src="vendor/echarts.min.js"></script>
+<script src="food-db.js?v=20261030-ui26"></script>
+<script src="app.js?v=20261105-volt"></script>
+<script>
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+        navigator.serviceWorker.register('sw.js').catch(function () {});
+    });
+}
+</script>
+</body>
+</html>
