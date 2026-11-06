@@ -1,4 +1,4 @@
-# 智慧健身管理系统（Spring AI）
+# 智练Ai（Spring AI）
 
 基于大语言模型智能体的健身房管理系统（毕业设计作品）。  
 技术栈：Spring Boot 3 · Apache Shiro + JWT · Spring AI · MySQL · Redis · Elasticsearch · RocketMQ · 自定义 AI Starter。
